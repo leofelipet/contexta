@@ -1,4 +1,4 @@
-module github.com/leofelipe/contexta
+module github.com/leofelipet/contexta
 
 go 1.25
 

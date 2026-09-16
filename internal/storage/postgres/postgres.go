@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/leofelipe/contexta/migrations"
+	"github.com/leofelipet/contexta/migrations"
 	"github.com/pressly/goose/v3"
 )
 

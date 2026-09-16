@@ -13,14 +13,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leofelipe/contexta/internal/auth"
-	"github.com/leofelipe/contexta/internal/contacts"
-	"github.com/leofelipe/contexta/internal/conversations"
-	"github.com/leofelipe/contexta/internal/ingestion"
-	"github.com/leofelipe/contexta/internal/messages"
-	"github.com/leofelipe/contexta/internal/pagination"
-	"github.com/leofelipe/contexta/internal/providers/whatsapp/uazapi"
-	"github.com/leofelipe/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/activity"
+	"github.com/leofelipet/contexta/internal/admin"
+	"github.com/leofelipet/contexta/internal/auth"
+	"github.com/leofelipet/contexta/internal/contacts"
+	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/storage/postgres"
 )
 
 const maxWebhookBody = 2 << 20
@@ -34,6 +36,16 @@ type Store interface {
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
 	GetMessage(context.Context, string) (messages.Message, error)
 	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
+	Dashboard(context.Context) (admin.Dashboard, error)
+	LastActivityAt(context.Context, string) (*time.Time, error)
+	RecordActivity(context.Context, activity.Record) error
+	ListActivity(context.Context, activity.ListParams) (activity.Page, error)
+}
+
+type UAZAPIClient interface {
+	Status(context.Context) (uazapi.InstanceStatus, error)
+	Webhooks(context.Context) ([]uazapi.Webhook, error)
+	ConfigureWebhook(context.Context, string) error
 }
 
 type Options struct {
@@ -43,6 +55,9 @@ type Options struct {
 	WebhookSecret      string
 	ProviderInstanceID string
 	CaptureDir         string
+	WebhookPublicURL   string
+	UAZAPIClient       UAZAPIClient
+	MCPEnabled         bool
 	Logger             *slog.Logger
 }
 
@@ -53,6 +68,9 @@ func New(options Options) http.Handler {
 		webhookSecret:      options.WebhookSecret,
 		providerInstanceID: options.ProviderInstanceID,
 		captureDir:         options.CaptureDir,
+		webhookPublicURL:   options.WebhookPublicURL,
+		uazapi:             options.UAZAPIClient,
+		mcpEnabled:         options.MCPEnabled,
 		logger:             options.Logger,
 	}
 
@@ -70,6 +88,11 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/messages", handler.searchMessages)
 	api.HandleFunc("GET /api/v1/messages/{id}", handler.getMessage)
 	api.HandleFunc("GET /api/v1/messages/{id}/around", handler.messagesAround)
+	api.HandleFunc("GET /api/v1/dashboard", handler.dashboard)
+	api.HandleFunc("GET /api/v1/integrations/uazapi", handler.uazapiStatus)
+	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
+	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
+	api.HandleFunc("GET /api/v1/activity", handler.listActivity)
 	root.Handle("/api/v1/", auth.NewMiddleware(options.APIToken).Wrap(api))
 
 	return accessLog(options.Logger, recoverPanic(options.Logger, root))
@@ -81,6 +104,9 @@ type handler struct {
 	webhookSecret      string
 	providerInstanceID string
 	captureDir         string
+	webhookPublicURL   string
+	uazapi             UAZAPIClient
+	mcpEnabled         bool
 	logger             *slog.Logger
 }
 
@@ -119,16 +145,19 @@ func (h *handler) uazapiWebhook(w http.ResponseWriter, r *http.Request) {
 	event, err := uazapi.DecodeEvent(payload)
 	if errors.Is(err, uazapi.ErrUnsupportedEvent) {
 		h.logger.Info("webhook event ignored", "provider", "uazapi", "reason", err.Error())
+		h.recordActivity(r.Context(), activity.Record{Category: "webhook", Level: "info", Operation: "webhook_received", Outcome: "ignored"})
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err != nil {
 		h.logger.Warn("webhook validation failed", "provider", "uazapi", "error", err)
+		h.recordActivity(r.Context(), activity.Record{Category: "webhook", Level: "warning", Operation: "webhook_received", Outcome: "invalid"})
 		writeError(w, http.StatusBadRequest, "invalid webhook payload")
 		return
 	}
 	if len(event.Messages) == 0 {
 		h.logger.Info("webhook event processed", "provider", "uazapi", "event_type", event.Type, "messages", 0)
+		h.recordActivity(r.Context(), activity.Record{Category: "webhook", Level: "info", Operation: "webhook_processed", Outcome: "success"})
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -137,11 +166,14 @@ func (h *handler) uazapiWebhook(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logger.Error("webhook processing failed", "provider", "uazapi", "event_type", event.Type, "error", err)
+		h.recordActivity(r.Context(), activity.Record{Category: "webhook", Level: "error", Operation: "webhook_processed", Outcome: "failed"})
 		writeError(w, http.StatusInternalServerError, "webhook processing failed")
 		return
 	}
 	h.logger.Info("webhook event processed", "provider", "uazapi", "event_type", event.Type,
 		"processed", result.Processed, "created", result.Created, "updated", result.Updated)
+	metadata, _ := json.Marshal(map[string]int{"processed": result.Processed, "created": result.Created, "updated": result.Updated})
+	h.recordActivity(r.Context(), activity.Record{Category: "webhook", Level: "info", Operation: "webhook_processed", Outcome: "success", Metadata: metadata})
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -208,7 +240,8 @@ func (h *handler) searchMessagesWithConversation(w http.ResponseWriter, r *http.
 	page, err := h.store.SearchMessages(r.Context(), messages.SearchParams{
 		Query: r.URL.Query().Get("query"), From: from, To: to,
 		ContactID: r.URL.Query().Get("contact_id"), ConversationID: conversationID,
-		Direction: r.URL.Query().Get("direction"), Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+		Direction: r.URL.Query().Get("direction"), Type: r.URL.Query().Get("type"),
+		Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -234,6 +267,144 @@ func (h *handler) messagesAround(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, around)
+}
+
+func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) {
+	dashboard, err := h.store.Dashboard(r.Context())
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	dashboard.UAZAPIStatus = "unavailable"
+	if h.uazapi != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if status, err := h.uazapi.Status(ctx); err == nil {
+			dashboard.UAZAPIStatus = status.Instance.Status
+		}
+	}
+	writeJSON(w, http.StatusOK, dashboard)
+}
+
+type uazapiStatusResponse struct {
+	Instance struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Status      string `json:"status"`
+		ProfileName string `json:"profile_name"`
+	} `json:"instance"`
+	Connection struct {
+		Connected bool `json:"connected"`
+		LoggedIn  bool `json:"logged_in"`
+	} `json:"connection"`
+	Webhook struct {
+		Configured bool     `json:"configured"`
+		Enabled    bool     `json:"enabled"`
+		Events     []string `json:"events"`
+	} `json:"webhook"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+func (h *handler) uazapiStatus(w http.ResponseWriter, r *http.Request) {
+	if h.uazapi == nil {
+		writeError(w, http.StatusServiceUnavailable, "UAZAPI unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	status, err := h.uazapi.Status(ctx)
+	if err != nil {
+		h.logger.Warn("UAZAPI status failed", "error", err)
+		writeError(w, http.StatusBadGateway, "failed to query UAZAPI")
+		return
+	}
+	webhooks, err := h.uazapi.Webhooks(ctx)
+	if err != nil {
+		h.logger.Warn("UAZAPI webhook query failed", "error", err)
+		writeError(w, http.StatusBadGateway, "failed to query UAZAPI webhook")
+		return
+	}
+	response := uazapiStatusResponse{CheckedAt: time.Now().UTC()}
+	response.Instance.ID = status.Instance.ID
+	response.Instance.Name = status.Instance.Name
+	response.Instance.Status = status.Instance.Status
+	response.Instance.ProfileName = status.Instance.ProfileName
+	response.Connection.Connected = status.Status.Connected
+	response.Connection.LoggedIn = status.Status.LoggedIn
+	callbackURL := h.callbackURL()
+	for _, webhook := range webhooks {
+		if callbackURL != "" && webhook.URL == callbackURL {
+			response.Webhook.Configured = true
+			response.Webhook.Enabled = webhook.Enabled
+			response.Webhook.Events = webhook.Events
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *handler) configureUAZAPIWebhook(w http.ResponseWriter, r *http.Request) {
+	callbackURL := h.callbackURL()
+	if callbackURL == "" || h.uazapi == nil {
+		writeError(w, http.StatusConflict, "UAZAPI webhook public URL is not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := h.uazapi.ConfigureWebhook(ctx, callbackURL); err != nil {
+		h.logger.Error("UAZAPI webhook configuration failed", "error", err)
+		h.recordActivity(r.Context(), activity.Record{Category: "uazapi", Level: "error", Operation: "uazapi_webhook_configured", Outcome: "failed"})
+		writeError(w, http.StatusBadGateway, "failed to configure UAZAPI webhook")
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{Category: "uazapi", Level: "info", Operation: "uazapi_webhook_configured", Outcome: "success"})
+	writeJSON(w, http.StatusOK, map[string]bool{"configured": true})
+}
+
+func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
+	lastAccess, err := h.store.LastActivityAt(r.Context(), "mcp")
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, admin.MCPStatus{
+		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
+		Tools:        []string{"search_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact"},
+		LastAccessAt: lastAccess,
+	})
+}
+
+func (h *handler) listActivity(w http.ResponseWriter, r *http.Request) {
+	from, to, err := parseRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.store.ListActivity(r.Context(), activity.ListParams{
+		Category: r.URL.Query().Get("category"), Level: r.URL.Query().Get("level"),
+		From: from, To: to, Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pageResponse[activity.Event]{Data: page.Events, NextCursor: page.NextCursor})
+}
+
+func (h *handler) callbackURL() string {
+	if h.webhookPublicURL == "" || h.webhookSecret == "" {
+		return ""
+	}
+	return strings.TrimRight(h.webhookPublicURL, "/") + "/" + h.webhookSecret
+}
+
+func (h *handler) recordActivity(ctx context.Context, record activity.Record) {
+	if h.store == nil {
+		return
+	}
+	if err := h.store.RecordActivity(ctx, record); err != nil {
+		h.logger.Error("activity recording failed", "category", record.Category, "operation", record.Operation, "error", err)
+	}
 }
 
 func (h *handler) handleStoreError(w http.ResponseWriter, err error) {

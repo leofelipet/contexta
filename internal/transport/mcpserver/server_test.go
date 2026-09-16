@@ -8,13 +8,16 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/leofelipe/contexta/internal/contacts"
-	"github.com/leofelipe/contexta/internal/conversations"
-	"github.com/leofelipe/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/activity"
+	"github.com/leofelipet/contexta/internal/contacts"
+	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type fakeStore struct{}
+
+func (fakeStore) RecordActivity(context.Context, activity.Record) error { return nil }
 
 func (fakeStore) ListContacts(context.Context, contacts.ListParams) (contacts.Page, error) {
 	return contacts.Page{Contacts: []contacts.Contact{{ID: "contact-1", Name: "Alice"}}}, nil

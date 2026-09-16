@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leofelipe/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/ingestion"
 )
 
 var ErrUnsupportedEvent = errors.New("unsupported UAZAPI event")

@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/leofelipe/contexta/internal/contacts"
-	"github.com/leofelipe/contexta/internal/conversations"
-	"github.com/leofelipe/contexta/internal/messages"
-	"github.com/leofelipe/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/contacts"
+	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/pagination"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -100,16 +100,22 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, provider_conversation_id, COALESCE(contact_id::text, ''), type,
-		       title, last_message_at, created_at, updated_at,
-		       COALESCE(last_message_at, created_at) AS sort_time
-		FROM conversations
-		WHERE ($1 = '' OR title ILIKE '%' || $1 || '%' OR provider_conversation_id ILIKE '%' || $1 || '%')
-		  AND ($2::uuid IS NULL OR contact_id = $2)
-		  AND ($3::timestamptz IS NULL OR last_message_at >= $3)
-		  AND ($4::timestamptz IS NULL OR last_message_at < $4)
-		  AND ($5::timestamptz IS NULL OR (COALESCE(last_message_at, created_at), id) < ($5, $6::uuid))
-		ORDER BY sort_time DESC, id DESC
+		SELECT c.id::text, c.provider_conversation_id, COALESCE(c.contact_id::text, ''), c.type,
+		       c.title, c.last_message_at, c.created_at, c.updated_at,
+		       lm.id::text, lm.direction, lm.type, lm.text, lm.occurred_at,
+		       COALESCE(c.last_message_at, c.created_at) AS sort_time
+		FROM conversations c
+		LEFT JOIN LATERAL (
+			SELECT id, direction, type, text, occurred_at
+			FROM messages WHERE conversation_id = c.id
+			ORDER BY occurred_at DESC, id DESC LIMIT 1
+		) lm ON true
+		WHERE ($1 = '' OR c.title ILIKE '%' || $1 || '%' OR c.provider_conversation_id ILIKE '%' || $1 || '%')
+		  AND ($2::uuid IS NULL OR c.contact_id = $2)
+		  AND ($3::timestamptz IS NULL OR c.last_message_at >= $3)
+		  AND ($4::timestamptz IS NULL OR c.last_message_at < $4)
+		  AND ($5::timestamptz IS NULL OR (COALESCE(c.last_message_at, c.created_at), c.id) < ($5, $6::uuid))
+		ORDER BY sort_time DESC, c.id DESC
 		LIMIT $7`, params.Query, nullableUUID(params.ContactID), params.From, params.To,
 		nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
 	if err != nil {
@@ -124,11 +130,20 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 	result := make([]item, 0, limit+1)
 	for rows.Next() {
 		var current item
+		var previewID, previewDirection, previewType, previewText *string
+		var previewTimestamp *time.Time
 		if err := rows.Scan(&current.conversation.ID, &current.conversation.ProviderConversationID,
 			&current.conversation.ContactID, &current.conversation.Type, &current.conversation.Title,
 			&current.conversation.LastMessageAt, &current.conversation.CreatedAt,
-			&current.conversation.UpdatedAt, &current.sortTime); err != nil {
+			&current.conversation.UpdatedAt, &previewID, &previewDirection, &previewType,
+			&previewText, &previewTimestamp, &current.sortTime); err != nil {
 			return conversations.Page{}, fmt.Errorf("scan conversation: %w", err)
+		}
+		if previewID != nil && previewTimestamp != nil {
+			current.conversation.LastMessage = &conversations.Preview{
+				ID: *previewID, Direction: valueOrEmpty(previewDirection), Type: valueOrEmpty(previewType),
+				Text: valueOrEmpty(previewText), Timestamp: *previewTimestamp,
+			}
 		}
 		result = append(result, current)
 	}
@@ -152,19 +167,36 @@ func (s *Store) GetConversation(ctx context.Context, id string) (conversations.C
 		return conversations.Conversation{}, ErrInvalidArgument
 	}
 	var conversation conversations.Conversation
-	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, provider_conversation_id, COALESCE(contact_id::text, ''), type,
-		       title, last_message_at, created_at, updated_at
-		FROM conversations WHERE id = $1`, id).Scan(
+	row := s.pool.QueryRow(ctx, `
+		SELECT c.id::text, c.provider_conversation_id, COALESCE(c.contact_id::text, ''), c.type,
+		       c.title, c.last_message_at, c.created_at, c.updated_at,
+		       lm.id::text, lm.direction, lm.type, lm.text, lm.occurred_at
+		FROM conversations c
+		LEFT JOIN LATERAL (
+			SELECT id, direction, type, text, occurred_at
+			FROM messages WHERE conversation_id = c.id
+			ORDER BY occurred_at DESC, id DESC LIMIT 1
+		) lm ON true
+		WHERE c.id = $1`, id)
+	var previewID, previewDirection, previewType, previewText *string
+	var previewTimestamp *time.Time
+	err := row.Scan(
 		&conversation.ID, &conversation.ProviderConversationID, &conversation.ContactID,
 		&conversation.Type, &conversation.Title, &conversation.LastMessageAt,
-		&conversation.CreatedAt, &conversation.UpdatedAt,
+		&conversation.CreatedAt, &conversation.UpdatedAt, &previewID, &previewDirection,
+		&previewType, &previewText, &previewTimestamp,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return conversations.Conversation{}, ErrNotFound
 	}
 	if err != nil {
 		return conversations.Conversation{}, fmt.Errorf("get conversation: %w", err)
+	}
+	if previewID != nil && previewTimestamp != nil {
+		conversation.LastMessage = &conversations.Preview{
+			ID: *previewID, Direction: valueOrEmpty(previewDirection), Type: valueOrEmpty(previewType),
+			Text: valueOrEmpty(previewText), Timestamp: *previewTimestamp,
+		}
 	}
 	return conversation, nil
 }
@@ -201,10 +233,12 @@ func (s *Store) SearchMessages(ctx context.Context, params messages.SearchParams
 		  AND ($4::uuid IS NULL OR m.sender_contact_id = $4 OR conv.contact_id = $4)
 		  AND ($5::uuid IS NULL OR m.conversation_id = $5)
 		  AND ($6 = '' OR m.direction = $6)
-		  AND ($7::timestamptz IS NULL OR (m.occurred_at, m.id) < ($7, $8::uuid))
+		  AND ($7 = '' OR m.type = $7)
+		  AND ($8::timestamptz IS NULL OR (m.occurred_at, m.id) < ($8, $9::uuid))
 		ORDER BY m.occurred_at DESC, m.id DESC
-		LIMIT $9`, params.Query, params.From, params.To, nullableUUID(params.ContactID),
-		nullableUUID(params.ConversationID), params.Direction, nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
+		LIMIT $10`, params.Query, params.From, params.To, nullableUUID(params.ContactID),
+		nullableUUID(params.ConversationID), params.Direction, params.Type,
+		nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
 	if err != nil {
 		return messages.Page{}, fmt.Errorf("search messages: %w", err)
 	}
@@ -337,6 +371,13 @@ func nullableTime(value time.Time) any {
 		return nil
 	}
 	return value
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func isUUID(value string) bool {

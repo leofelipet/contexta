@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/leofelipe/contexta/internal/app"
+	"github.com/leofelipet/contexta/internal/app"
 )
 
 func main() {

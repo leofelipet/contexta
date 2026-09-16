@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/leofelipe/contexta/internal/auth"
-	"github.com/leofelipe/contexta/internal/contacts"
-	"github.com/leofelipe/contexta/internal/conversations"
-	"github.com/leofelipe/contexta/internal/messages"
-	"github.com/leofelipe/contexta/internal/pagination"
-	"github.com/leofelipe/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/activity"
+	"github.com/leofelipet/contexta/internal/auth"
+	"github.com/leofelipet/contexta/internal/contacts"
+	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,6 +24,7 @@ type Store interface {
 	GetConversation(context.Context, string) (conversations.Conversation, error)
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
 	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
+	RecordActivity(context.Context, activity.Record) error
 }
 
 type server struct {
@@ -68,6 +70,7 @@ type searchMessagesInput struct {
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Contexta contact ID."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Contexta conversation ID."`
 	Direction      string `json:"direction,omitempty" jsonschema:"Message direction: inbound or outbound."`
+	Type           string `json:"type,omitempty" jsonschema:"Message type such as text, image, audio, or document."`
 	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of messages, up to 100."`
 	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
 }
@@ -78,7 +81,7 @@ type messagesOutput struct {
 }
 
 func (s *server) searchMessages(ctx context.Context, _ *mcp.CallToolRequest, input searchMessagesInput) (*mcp.CallToolResult, messagesOutput, error) {
-	s.logAccess("search_messages")
+	s.logAccess(ctx, "search_messages")
 	from, to, err := parseRange(input.From, input.To)
 	if err != nil {
 		return nil, messagesOutput{}, err
@@ -86,10 +89,10 @@ func (s *server) searchMessages(ctx context.Context, _ *mcp.CallToolRequest, inp
 	page, err := s.store.SearchMessages(ctx, messages.SearchParams{
 		Query: input.Query, From: from, To: to, ContactID: input.ContactID,
 		ConversationID: input.ConversationID, Direction: input.Direction,
-		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+		Type: input.Type, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
-		s.logError("search_messages", err)
+		s.logError(ctx, "search_messages", err)
 		return nil, messagesOutput{}, safeToolError(err)
 	}
 	return nil, messagesOutput{Messages: page.Messages, NextCursor: page.NextCursor}, nil
@@ -110,7 +113,7 @@ type conversationsOutput struct {
 }
 
 func (s *server) findConversations(ctx context.Context, _ *mcp.CallToolRequest, input findConversationsInput) (*mcp.CallToolResult, conversationsOutput, error) {
-	s.logAccess("find_conversations")
+	s.logAccess(ctx, "find_conversations")
 	from, to, err := parseRange(input.From, input.To)
 	if err != nil {
 		return nil, conversationsOutput{}, err
@@ -120,7 +123,7 @@ func (s *server) findConversations(ctx context.Context, _ *mcp.CallToolRequest, 
 		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
-		s.logError("find_conversations", err)
+		s.logError(ctx, "find_conversations", err)
 		return nil, conversationsOutput{}, safeToolError(err)
 	}
 	return nil, conversationsOutput{Conversations: page.Conversations, NextCursor: page.NextCursor}, nil
@@ -135,10 +138,10 @@ type conversationOutput struct {
 }
 
 func (s *server) getConversation(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, conversationOutput, error) {
-	s.logAccess("get_conversation")
+	s.logAccess(ctx, "get_conversation")
 	conversation, err := s.store.GetConversation(ctx, input.ID)
 	if err != nil {
-		s.logError("get_conversation", err)
+		s.logError(ctx, "get_conversation", err)
 		return nil, conversationOutput{}, safeToolError(err)
 	}
 	return nil, conversationOutput{Conversation: conversation}, nil
@@ -153,7 +156,7 @@ type getMessagesInput struct {
 }
 
 func (s *server) getMessages(ctx context.Context, _ *mcp.CallToolRequest, input getMessagesInput) (*mcp.CallToolResult, messagesOutput, error) {
-	s.logAccess("get_messages")
+	s.logAccess(ctx, "get_messages")
 	from, to, err := parseRange(input.From, input.To)
 	if err != nil {
 		return nil, messagesOutput{}, err
@@ -163,7 +166,7 @@ func (s *server) getMessages(ctx context.Context, _ *mcp.CallToolRequest, input 
 		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
-		s.logError("get_messages", err)
+		s.logError(ctx, "get_messages", err)
 		return nil, messagesOutput{}, safeToolError(err)
 	}
 	return nil, messagesOutput{Messages: page.Messages, NextCursor: page.NextCursor}, nil
@@ -182,10 +185,10 @@ type aroundOutput struct {
 }
 
 func (s *server) getMessagesAround(ctx context.Context, _ *mcp.CallToolRequest, input aroundInput) (*mcp.CallToolResult, aroundOutput, error) {
-	s.logAccess("get_messages_around")
+	s.logAccess(ctx, "get_messages_around")
 	around, err := s.store.GetMessagesAround(ctx, input.MessageID, aroundLimit(input.Before), aroundLimit(input.After))
 	if err != nil {
-		s.logError("get_messages_around", err)
+		s.logError(ctx, "get_messages_around", err)
 		return nil, aroundOutput{}, safeToolError(err)
 	}
 	return nil, aroundOutput{Previous: around.Previous, Message: around.Message, Next: around.Next}, nil
@@ -203,10 +206,10 @@ type contactsOutput struct {
 }
 
 func (s *server) listContacts(ctx context.Context, _ *mcp.CallToolRequest, input listContactsInput) (*mcp.CallToolResult, contactsOutput, error) {
-	s.logAccess("list_contacts")
+	s.logAccess(ctx, "list_contacts")
 	page, err := s.store.ListContacts(ctx, contacts.ListParams{Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor})
 	if err != nil {
-		s.logError("list_contacts", err)
+		s.logError(ctx, "list_contacts", err)
 		return nil, contactsOutput{}, safeToolError(err)
 	}
 	return nil, contactsOutput{Contacts: page.Contacts, NextCursor: page.NextCursor}, nil
@@ -217,21 +220,27 @@ type contactOutput struct {
 }
 
 func (s *server) getContact(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, contactOutput, error) {
-	s.logAccess("get_contact")
+	s.logAccess(ctx, "get_contact")
 	contact, err := s.store.GetContact(ctx, input.ID)
 	if err != nil {
-		s.logError("get_contact", err)
+		s.logError(ctx, "get_contact", err)
 		return nil, contactOutput{}, safeToolError(err)
 	}
 	return nil, contactOutput{Contact: contact}, nil
 }
 
-func (s *server) logError(tool string, err error) {
+func (s *server) logError(ctx context.Context, tool string, err error) {
 	s.logger.Error("mcp tool failed", "tool", tool, "error", err)
+	if recordErr := s.store.RecordActivity(ctx, activity.Record{Category: "mcp", Level: "error", Operation: tool, Outcome: "failed"}); recordErr != nil {
+		s.logger.Error("activity recording failed", "category", "mcp", "operation", tool, "error", recordErr)
+	}
 }
 
-func (s *server) logAccess(tool string) {
+func (s *server) logAccess(ctx context.Context, tool string) {
 	s.logger.Info("mcp tool called", "tool", tool)
+	if err := s.store.RecordActivity(ctx, activity.Record{Category: "mcp", Level: "info", Operation: tool, Outcome: "called"}); err != nil {
+		s.logger.Error("activity recording failed", "category", "mcp", "operation", tool, "error", err)
+	}
 }
 
 func safeToolError(err error) error {

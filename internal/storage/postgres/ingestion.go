@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/leofelipe/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/ingestion"
 )
 
 func (s *Store) IngestMessages(ctx context.Context, batch ingestion.Batch) (ingestion.Result, error) {

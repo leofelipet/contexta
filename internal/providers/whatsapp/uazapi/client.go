@@ -30,6 +30,12 @@ type InstanceStatus struct {
 	} `json:"status"`
 }
 
+type Webhook struct {
+	Enabled bool     `json:"enabled"`
+	URL     string   `json:"url"`
+	Events  []string `json:"events"`
+}
+
 func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -56,6 +62,14 @@ func (c *Client) ConfigureWebhook(ctx context.Context, callbackURL string) error
 		"addUrlTypesMessages": false,
 	}
 	return c.do(ctx, http.MethodPost, "/webhook", payload, nil)
+}
+
+func (c *Client) Webhooks(ctx context.Context) ([]Webhook, error) {
+	var webhooks []Webhook
+	if err := c.do(ctx, http.MethodGet, "/webhook", nil, &webhooks); err != nil {
+		return nil, err
+	}
+	return webhooks, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, output any) error {

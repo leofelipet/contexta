@@ -1,4 +1,4 @@
-.PHONY: test test-race vet postgres-up postgres-down migrate run
+.PHONY: test test-race vet postgres-up postgres-down migrate run backend-up
 
 test:
 	go test ./...
@@ -20,3 +20,6 @@ migrate:
 
 run:
 	go run ./cmd/contexta serve
+
+backend-up:
+	docker compose --profile backend up --build

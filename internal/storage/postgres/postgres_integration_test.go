@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leofelipe/contexta/internal/contacts"
-	"github.com/leofelipe/contexta/internal/conversations"
-	"github.com/leofelipe/contexta/internal/ingestion"
-	"github.com/leofelipe/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/activity"
+	"github.com/leofelipet/contexta/internal/contacts"
+	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/messages"
 )
 
 func TestIngestionAndQueries(t *testing.T) {
@@ -77,6 +78,9 @@ func TestIngestionAndQueries(t *testing.T) {
 		t.Fatalf("conversations = %#v, error = %v", conversationPage, err)
 	}
 	conversationID := conversationPage.Conversations[0].ID
+	if conversationPage.Conversations[0].LastMessage == nil || conversationPage.Conversations[0].LastMessage.Text != "depois do contrato" {
+		t.Fatalf("conversation preview = %#v", conversationPage.Conversations[0].LastMessage)
+	}
 	allMessages, err := store.SearchMessages(ctx, messages.SearchParams{ConversationID: conversationID, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +107,10 @@ func TestIngestionAndQueries(t *testing.T) {
 	if len(messagePage.Messages) != 2 || messagePage.NextCursor == "" {
 		t.Fatalf("message page = %#v", messagePage)
 	}
+	typePage, err := store.SearchMessages(ctx, messages.SearchParams{ConversationID: conversationID, Type: "text", Limit: 10})
+	if err != nil || len(typePage.Messages) != 3 {
+		t.Fatalf("type-filtered messages = %#v, error = %v", typePage, err)
+	}
 	secondPage, err := store.SearchMessages(ctx, messages.SearchParams{
 		Query: "contrato", ConversationID: conversationID, Limit: 2, Cursor: messagePage.NextCursor,
 	})
@@ -122,5 +130,22 @@ func TestIngestionAndQueries(t *testing.T) {
 	contactPage, err := store.ListContacts(ctx, contacts.ListParams{Query: suffix, Limit: 10})
 	if err != nil || len(contactPage.Contacts) != 1 {
 		t.Fatalf("contacts = %#v, error = %v", contactPage, err)
+	}
+
+	if err := store.RecordActivity(ctx, activity.Record{
+		Category: "webhook", Level: "info", Operation: "test_webhook", Outcome: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activityPage, err := store.ListActivity(ctx, activity.ListParams{Category: "webhook", Limit: 1})
+	if err != nil || len(activityPage.Events) != 1 {
+		t.Fatalf("activity = %#v, error = %v", activityPage, err)
+	}
+	dashboard, err := store.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dashboard.Contacts < 1 || dashboard.Conversations < 1 || dashboard.Messages < 3 || dashboard.LastWebhookAt == nil {
+		t.Fatalf("dashboard = %#v", dashboard)
 	}
 }

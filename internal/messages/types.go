@@ -23,6 +23,7 @@ type SearchParams struct {
 	ContactID      string
 	ConversationID string
 	Direction      string
+	Type           string
 	Limit          int
 	Cursor         string
 }

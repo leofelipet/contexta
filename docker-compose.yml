@@ -15,5 +15,39 @@ services:
       timeout: 3s
       retries: 10
 
+  backend:
+    profiles: ["backend"]
+    build: .
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://contexta:contexta@postgres:5432/contexta?sslmode=disable
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+      API_BEARER_TOKEN: ${API_BEARER_TOKEN}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+      MCP_ENABLED: ${MCP_ENABLED:-true}
+      UAZAPI_BASE_URL: ${UAZAPI_BASE_URL}
+      UAZAPI_TOKEN: ${UAZAPI_TOKEN}
+      UAZAPI_INSTANCE_ID: ${UAZAPI_INSTANCE_ID}
+      UAZAPI_WEBHOOK_SECRET: ${UAZAPI_WEBHOOK_SECRET}
+      UAZAPI_WEBHOOK_PUBLIC_URL: ${UAZAPI_WEBHOOK_PUBLIC_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${BACKEND_PORT:-8082}:8080"
+
+  migrate:
+    profiles: ["backend"]
+    build: .
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://contexta:contexta@postgres:5432/contexta?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   contexta-postgres:

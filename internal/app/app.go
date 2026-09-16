@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leofelipe/contexta/internal/config"
-	"github.com/leofelipe/contexta/internal/ingestion"
-	"github.com/leofelipe/contexta/internal/providers/whatsapp/uazapi"
-	"github.com/leofelipe/contexta/internal/storage/postgres"
-	"github.com/leofelipe/contexta/internal/transport/httpapi"
-	"github.com/leofelipe/contexta/internal/transport/mcpserver"
+	"github.com/leofelipet/contexta/internal/config"
+	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/transport/httpapi"
+	"github.com/leofelipet/contexta/internal/transport/mcpserver"
 )
 
 func Run(ctx context.Context, args []string, stdout io.Writer) error {
@@ -76,10 +76,12 @@ func serve(ctx context.Context, cfg config.Config) error {
 	defer store.Close()
 
 	ingestionService := ingestion.NewService(store)
+	uazapiClient := uazapi.NewClient(cfg.UAZAPI.BaseURL, cfg.UAZAPI.Token)
 	apiHandler := httpapi.New(httpapi.Options{
 		Store: store, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
-		CaptureDir: cfg.UAZAPI.CaptureDir, Logger: logger,
+		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
+		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, Logger: logger,
 	})
 
 	root := http.NewServeMux()
