@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/leofelipet/contexta/internal/activity"
+	"github.com/leofelipet/contexta/internal/chats"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/ingestion"
 	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/transcription"
 )
 
 func TestIngestionAndQueries(t *testing.T) {
@@ -84,6 +86,16 @@ func TestIngestionAndQueries(t *testing.T) {
 	if conversationPage.Conversations[0].LastMessage == nil || conversationPage.Conversations[0].LastMessage.Text != "depois do contrato" {
 		t.Fatalf("conversation preview = %#v", conversationPage.Conversations[0].LastMessage)
 	}
+	updatedChats, err := store.SyncChats(ctx, instance, []chats.Profile{{
+		JID: chat, Name: "Alice sincronizada " + suffix, PushName: "Alice", Phone: "5511999999999",
+	}})
+	if err != nil || updatedChats != 1 {
+		t.Fatalf("chat sync updated=%d, err=%v", updatedChats, err)
+	}
+	syncedConversation, err := store.GetConversation(ctx, conversationID)
+	if err != nil || syncedConversation.Title != "Alice sincronizada "+suffix {
+		t.Fatalf("synced conversation = %#v, err=%v", syncedConversation, err)
+	}
 	allMessages, err := store.SearchMessages(ctx, messages.SearchParams{ConversationID: conversationID, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -150,5 +162,37 @@ func TestIngestionAndQueries(t *testing.T) {
 	}
 	if dashboard.Contacts < 1 || dashboard.Conversations < 1 || dashboard.Messages < 3 || dashboard.LastWebhookAt == nil {
 		t.Fatalf("dashboard = %#v", dashboard)
+	}
+
+	audioID := "audio-" + suffix
+	_, err = store.IngestMessages(ctx, ingestion.Batch{
+		Provider: "uazapi", ProviderInstanceID: instance,
+		Messages: []ingestion.Message{{
+			ProviderMessageID: audioID,
+			Conversation:      ingestion.Conversation{ProviderID: chat, Type: "direct", Contact: &contact},
+			Sender:            &contact, Direction: "inbound", Type: "audio",
+			OccurredAt: baseTime.Add(4 * time.Minute), Audio: &ingestion.Audio{MIMEType: "audio/ogg", PTT: true},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, ok, err := store.ClaimTranscription(ctx, time.Minute)
+	if err != nil || !ok || job.ProviderMessageID != audioID {
+		t.Fatalf("transcription job = %#v, ok=%v, err=%v", job, ok, err)
+	}
+	transcriptText := "transcricao" + suffix
+	if err := store.CompleteTranscription(ctx, job, transcription.Result{
+		Text: transcriptText, Language: "pt", Model: "whisper-large-v3-turbo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transcribed, err := store.SearchMessages(ctx, messages.SearchParams{Query: transcriptText, Limit: 10})
+	if err != nil || len(transcribed.Messages) != 1 || transcribed.Messages[0].Transcription == nil || transcribed.Messages[0].Transcription.Text != transcriptText {
+		t.Fatalf("transcribed messages = %#v, err=%v", transcribed, err)
+	}
+	conversationWithTranscript, err := store.GetConversation(ctx, conversationID)
+	if err != nil || conversationWithTranscript.LastMessage == nil || conversationWithTranscript.LastMessage.Text != transcriptText {
+		t.Fatalf("transcription preview = %#v, err=%v", conversationWithTranscript.LastMessage, err)
 	}
 }

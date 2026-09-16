@@ -45,6 +45,23 @@ go run ./cmd/contexta uazapi-configure-webhook
 
 UAZAPI 2.1.1 does not document a webhook signature or custom authorization header. Configure the reverse proxy to redact the webhook path from access logs, apply rate limiting, and rotate `UAZAPI_WEBHOOK_SECRET` if the callback URL may have been exposed.
 
+## Audio transcription
+
+Contexta can transcribe new WhatsApp audio messages asynchronously with Groq. The webhook stores the message and enqueues a durable PostgreSQL job; a background worker downloads decrypted OGG media through UAZAPI and uploads it directly to Groq without creating a public media URL or retaining the audio.
+
+Enable transcription with:
+
+```text
+TRANSCRIPTION_ENABLED=true
+GROQ_API_KEY=gsk_...
+GROQ_TRANSCRIPTION_MODEL=whisper-large-v3-turbo
+GROQ_TRANSCRIPTION_LANGUAGE=pt
+```
+
+The supported models are `whisper-large-v3-turbo` and `whisper-large-v3`. Failed jobs use bounded retries, survive application restarts, and never block webhook acknowledgement. Only messages received after this feature is deployed are enqueued. Transcripts are searchable and available through REST and MCP responses.
+
+Conversation names are reconciled from UAZAPI every six hours. Direct chats prefer the saved contact name, WhatsApp push name, and phone number in that order; internal `@lid` identifiers are never used as display titles.
+
 ## Endpoints
 
 Health checks:
@@ -111,6 +128,8 @@ Captured files still contain private conversation data. Keep capture mode disabl
 - The webhook secret is never emitted by the route logger.
 - Logs do not include message bodies or authentication headers.
 - UAZAPI credentials and application tokens only come from environment variables.
+- Groq API keys, UAZAPI media keys, signed media URLs, audio bytes, and transcript contents are never logged.
+- Downloaded audio is size-limited, kept in memory only for processing, and is not persisted by Contexta.
 - MCP tools are read-only and expose response models rather than database metadata.
 - Operational activity excludes message bodies, payloads, authentication headers, and secrets.
 

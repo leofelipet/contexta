@@ -191,6 +191,19 @@ func ingestMessage(ctx context.Context, tx pgx.Tx, instanceID string, message in
 	if err != nil {
 		return false, fmt.Errorf("upsert message: %w", err)
 	}
+	if created && message.Audio != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO transcription_jobs (message_id, status)
+			VALUES ($1, 'pending')
+			ON CONFLICT (message_id) DO NOTHING`, messageID); err != nil {
+			return false, fmt.Errorf("enqueue transcription: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE messages SET transcription_status = 'pending', updated_at = now()
+			WHERE id = $1`, messageID); err != nil {
+			return false, fmt.Errorf("mark transcription pending: %w", err)
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE messages SET reply_to_message_id = $3, updated_at = now()
 		WHERE provider_instance_id = $1

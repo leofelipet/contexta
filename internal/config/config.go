@@ -22,6 +22,7 @@ type Config struct {
 	MCPToken        string
 	MCPEnabled      bool
 	UAZAPI          UAZAPI
+	Transcription   Transcription
 }
 
 type UAZAPI struct {
@@ -31,6 +32,13 @@ type UAZAPI struct {
 	WebhookSecret    string
 	WebhookPublicURL string
 	CaptureDir       string
+}
+
+type Transcription struct {
+	Enabled  bool
+	APIKey   string
+	Model    string
+	Language string
 }
 
 func Load() (Config, error) {
@@ -65,7 +73,18 @@ func Load() (Config, error) {
 			WebhookPublicURL: strings.TrimRight(os.Getenv("UAZAPI_WEBHOOK_PUBLIC_URL"), "/"),
 			CaptureDir:       os.Getenv("UAZAPI_CAPTURE_DIR"),
 		},
+		Transcription: Transcription{
+			Enabled:  false,
+			APIKey:   os.Getenv("GROQ_API_KEY"),
+			Model:    stringEnv("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo"),
+			Language: stringEnv("GROQ_TRANSCRIPTION_LANGUAGE", "pt"),
+		},
 	}
+	transcriptionEnabled, err := boolEnv("TRANSCRIPTION_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Transcription.Enabled = transcriptionEnabled
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -101,6 +120,15 @@ func (c Config) Validate() error {
 	}
 	if len(c.UAZAPI.WebhookSecret) < minimumSecretLength {
 		errs = append(errs, fmt.Errorf("UAZAPI_WEBHOOK_SECRET must contain at least %d characters", minimumSecretLength))
+	}
+	if c.Transcription.Enabled && c.Transcription.APIKey == "" {
+		errs = append(errs, errors.New("GROQ_API_KEY is required when transcription is enabled"))
+	}
+	if c.Transcription.Enabled && c.Transcription.Model != "whisper-large-v3-turbo" && c.Transcription.Model != "whisper-large-v3" {
+		errs = append(errs, errors.New("GROQ_TRANSCRIPTION_MODEL must be whisper-large-v3-turbo or whisper-large-v3"))
+	}
+	if c.Transcription.Enabled && len(c.Transcription.Language) != 2 {
+		errs = append(errs, errors.New("GROQ_TRANSCRIPTION_LANGUAGE must be an ISO-639-1 code"))
 	}
 	return errors.Join(errs...)
 }

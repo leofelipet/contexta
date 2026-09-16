@@ -47,6 +47,14 @@ type Message struct {
 	OccurredAt               time.Time
 	ReplyToProviderMessageID string
 	Metadata                 json.RawMessage
+	Audio                    *Audio
+}
+
+type Audio struct {
+	MIMEType string
+	Size     int64
+	Duration time.Duration
+	PTT      bool
 }
 
 type Batch struct {

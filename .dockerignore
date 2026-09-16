@@ -1,5 +1,6 @@
 .git
 .env
+.opencode
 .contexta-captures
 coverage.out
 *.test

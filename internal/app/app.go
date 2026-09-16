@@ -14,8 +14,10 @@ import (
 
 	"github.com/leofelipet/contexta/internal/config"
 	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/providers/transcription/groq"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/transcription"
 	"github.com/leofelipet/contexta/internal/transport/httpapi"
 	"github.com/leofelipet/contexta/internal/transport/mcpserver"
 )
@@ -80,6 +82,12 @@ func serve(ctx context.Context, cfg config.Config) error {
 
 	ingestionService := ingestion.NewService(store)
 	uazapiClient := uazapi.NewClient(cfg.UAZAPI.BaseURL, cfg.UAZAPI.Token)
+	go syncChats(ctx, store, uazapiClient, cfg.UAZAPI.InstanceID, logger)
+	if cfg.Transcription.Enabled {
+		transcriber := groq.NewClient(cfg.Transcription.APIKey, cfg.Transcription.Model)
+		worker := transcription.NewService(store, uazapiClient, transcriber, cfg.Transcription.Language, logger)
+		go worker.Run(ctx)
+	}
 	apiHandler := httpapi.New(httpapi.Options{
 		Store: store, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
@@ -122,6 +130,30 @@ func serve(ctx context.Context, cfg config.Config) error {
 			return fmt.Errorf("shutdown HTTP server: %w", err)
 		}
 		return nil
+	}
+}
+
+func syncChats(ctx context.Context, store *postgres.Store, client *uazapi.Client, instanceID string, logger *slog.Logger) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		profiles, err := client.FindChats(ctx)
+		if err != nil {
+			logger.Warn("chat synchronization failed", "error", err)
+		} else {
+			updated, err := store.SyncChats(ctx, instanceID, profiles)
+			if err != nil {
+				logger.Warn("chat synchronization failed", "error", err)
+			} else {
+				logger.Info("chats synchronized", "received", len(profiles), "updated", updated)
+			}
+		}
+		timer.Reset(6 * time.Hour)
 	}
 }
 

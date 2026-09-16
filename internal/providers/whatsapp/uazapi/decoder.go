@@ -41,7 +41,7 @@ func DecodeEvent(data []byte) (DecodedEvent, error) {
 	candidates := collectMessageCandidates(payload)
 	messages := make([]ingestion.Message, 0, len(candidates))
 	for _, candidate := range candidates {
-		message, err := normalizeMessage(candidate, eventType == "messages_update")
+		message, err := normalizeMessage(candidate.message, candidate.chat, eventType == "messages_update")
 		if err != nil {
 			return DecodedEvent{}, err
 		}
@@ -53,14 +53,14 @@ func DecodeEvent(data []byte) (DecodedEvent, error) {
 	return DecodedEvent{Type: eventType, Messages: messages}, nil
 }
 
-func normalizeMessage(raw map[string]any, updateEvent bool) (ingestion.Message, error) {
+func normalizeMessage(raw, chat map[string]any, updateEvent bool) (ingestion.Message, error) {
 	providerMessageID := firstString(raw, "messageid", "messageId", "message_id")
 	if providerMessageID == "" {
 		return ingestion.Message{}, errors.New("UAZAPI message has no messageid")
 	}
 	chatID := firstString(raw, "chatid", "chatId", "chat_id")
 	timestamp := parseTimestamp(firstValue(raw, "messageTimestamp", "timestamp", "message_timestamp"))
-	messageType := firstString(raw, "messageType", "type", "message_type")
+	messageType := normalizeMessageType(firstString(raw, "messageType", "type", "message_type"))
 	text := firstString(raw, "text", "body", "caption")
 	status := firstString(raw, "status")
 
@@ -93,16 +93,43 @@ func normalizeMessage(raw map[string]any, updateEvent bool) (ingestion.Message, 
 	conversation := ingestion.Conversation{
 		ProviderID: chatID,
 		Type:       conversationType,
-		Title:      firstString(raw, "chatName", "conversationName"),
+		Title:      firstString(raw, "groupName", "chatName", "conversationName"),
+	}
+	if conversation.Title == "" && conversationType == "group" {
+		conversation.Title = firstString(chat, "name", "wa_name")
 	}
 	if conversationType == "direct" {
-		counterparty := contactFromJID(chatID, firstString(raw, "senderName"))
-		if !fromMe && sender != nil {
+		counterparty := contactFromChat(chat, chatID)
+		if counterparty.ProviderID == "" {
+			counterparty = contactFromJID(chatID, "")
+		}
+		if !fromMe && sender != nil && (counterparty.Name == "" || counterparty.Phone == "") {
+			if counterparty.Name == "" {
+				counterparty.Name = sender.Name
+				counterparty.PushName = sender.PushName
+			}
+			if counterparty.Phone == "" {
+				counterparty.Phone = sender.Phone
+			}
+			counterparty.Identities = append(counterparty.Identities, sender.Identities...)
+		}
+		if !fromMe && sender != nil && counterparty.ProviderID == "" {
 			counterparty = *sender
 		}
 		conversation.Contact = &counterparty
 		if conversation.Title == "" {
-			conversation.Title = counterparty.Name
+			conversation.Title = firstDisplayValue(counterparty.Name, counterparty.PushName, counterparty.Phone)
+		}
+	}
+
+	var audio *ingestion.Audio
+	if messageType == "audio" {
+		content, _ := raw["content"].(map[string]any)
+		audio = &ingestion.Audio{
+			MIMEType: firstString(content, "mimetype", "mimeType"),
+			Size:     flexibleInt64(firstValue(content, "fileLength", "file_length", "size")),
+			Duration: time.Duration(flexibleInt64(firstValue(content, "seconds", "duration"))) * time.Second,
+			PTT:      flexibleBool(firstValue(content, "PTT", "ptt")),
 		}
 	}
 
@@ -118,31 +145,40 @@ func normalizeMessage(raw map[string]any, updateEvent bool) (ingestion.Message, 
 		OccurredAt:               timestamp,
 		ReplyToProviderMessageID: firstString(raw, "quoted", "replyid", "replyId"),
 		Metadata:                 metadata,
+		Audio:                    audio,
 	}, nil
 }
 
-func collectMessageCandidates(payload map[string]any) []map[string]any {
-	var result []map[string]any
-	var visit func(any)
-	visit = func(value any) {
+type messageCandidate struct {
+	message map[string]any
+	chat    map[string]any
+}
+
+func collectMessageCandidates(payload map[string]any) []messageCandidate {
+	var result []messageCandidate
+	var visit func(any, map[string]any)
+	visit = func(value any, chat map[string]any) {
 		switch current := value.(type) {
 		case map[string]any:
+			if currentChat, ok := current["chat"].(map[string]any); ok {
+				chat = currentChat
+			}
 			if firstString(current, "messageid", "messageId", "message_id") != "" {
-				result = append(result, current)
+				result = append(result, messageCandidate{message: current, chat: chat})
 				return
 			}
 			for _, key := range []string{"data", "message", "messages", "items", "history"} {
 				if child, ok := current[key]; ok {
-					visit(child)
+					visit(child, chat)
 				}
 			}
 		case []any:
 			for _, child := range current {
-				visit(child)
+				visit(child, chat)
 			}
 		}
 	}
-	visit(payload)
+	visit(payload, nil)
 	return result
 }
 
@@ -177,15 +213,46 @@ func contactFromJID(jid, name string) ingestion.Contact {
 	}
 }
 
+func contactFromChat(chat map[string]any, fallbackID string) ingestion.Contact {
+	jid := firstString(chat, "wa_chatid")
+	lid := firstString(chat, "wa_chatlid")
+	providerID := firstNonEmpty(jid, lid, fallbackID)
+	phone := firstString(chat, "phone")
+	if phone == "" && strings.HasSuffix(jid, "@s.whatsapp.net") {
+		phone = strings.TrimSuffix(jid, "@s.whatsapp.net")
+	}
+	name := firstString(chat, "wa_contactName", "lead_fullName", "lead_name", "name")
+	pushName := firstString(chat, "wa_name")
+	identities := make([]ingestion.Identity, 0, 2)
+	if jid != "" {
+		identities = append(identities, ingestion.Identity{Kind: "jid", Value: jid})
+	}
+	if lid != "" {
+		identities = append(identities, ingestion.Identity{Kind: "lid", Value: lid})
+	}
+	return ingestion.Contact{ProviderID: providerID, Identities: identities, Phone: phone, Name: name, PushName: pushName}
+}
+
 func selectedMetadata(raw map[string]any) (json.RawMessage, error) {
 	metadata := make(map[string]any)
 	for _, key := range []string{
-		"content", "fileURL", "reaction", "edited", "vote", "convertOptions",
+		"reaction", "edited", "vote", "convertOptions",
 		"buttonOrListid", "wasSentByApi", "source", "sender_pn", "sender_lid",
 		"sendFunction", "track_source", "track_id", "error",
 	} {
 		if value, ok := raw[key]; ok {
 			metadata[key] = value
+		}
+	}
+	if content, ok := raw["content"].(map[string]any); ok {
+		safeContent := make(map[string]any)
+		for _, key := range []string{"mimetype", "fileLength", "seconds", "PTT"} {
+			if value, ok := content[key]; ok {
+				safeContent[key] = value
+			}
+		}
+		if len(safeContent) > 0 {
+			metadata["content"] = safeContent
 		}
 	}
 	data, err := json.Marshal(metadata)
@@ -209,6 +276,35 @@ func normalizeEventType(value string) string {
 	default:
 		return value
 	}
+}
+
+func normalizeMessageType(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "audio", "audiomessage", "ptt", "voice", "voice_message":
+		return "audio"
+	default:
+		return value
+	}
+}
+
+func firstDisplayValue(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !isWhatsAppID(value) {
+			return value
+		}
+	}
+	return ""
+}
+
+func isWhatsAppID(value string) bool {
+	for _, suffix := range []string{"@lid", "@s.whatsapp.net", "@g.us", "@newsletter"} {
+		if strings.HasSuffix(value, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func conversationType(chatID string, isGroup bool) string {
@@ -261,6 +357,23 @@ func flexibleBool(value any) bool {
 		return parsed || current == "1"
 	default:
 		return false
+	}
+}
+
+func flexibleInt64(value any) int64 {
+	switch current := value.(type) {
+	case json.Number:
+		number, _ := current.Int64()
+		return number
+	case float64:
+		return int64(current)
+	case int64:
+		return current
+	case string:
+		number, _ := strconv.ParseInt(current, 10, 64)
+		return number
+	default:
+		return 0
 	}
 }
 

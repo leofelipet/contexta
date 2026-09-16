@@ -101,16 +101,18 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.id::text, c.provider_conversation_id, COALESCE(c.contact_id::text, ''), c.type,
-		       c.title, c.last_message_at, c.created_at, c.updated_at,
-		       lm.id::text, lm.direction, lm.type, lm.text, lm.occurred_at,
+		       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
+		       c.last_message_at, c.created_at, c.updated_at,
+		       lm.id::text, lm.direction, lm.type, lm.display_text, lm.occurred_at,
 		       COALESCE(c.last_message_at, c.created_at) AS sort_time
 		FROM conversations c
+		LEFT JOIN contacts cc ON cc.id = c.contact_id
 		LEFT JOIN LATERAL (
-			SELECT id, direction, type, text, occurred_at
+			SELECT id, direction, type, COALESCE(NULLIF(text, ''), transcription_text) AS display_text, occurred_at
 			FROM messages WHERE conversation_id = c.id
 			ORDER BY occurred_at DESC, id DESC LIMIT 1
 		) lm ON true
-		WHERE ($1 = '' OR c.title ILIKE '%' || $1 || '%' OR c.provider_conversation_id ILIKE '%' || $1 || '%')
+		WHERE ($1 = '' OR COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), '') ILIKE '%' || $1 || '%')
 		  AND ($2::uuid IS NULL OR c.contact_id = $2)
 		  AND ($3::timestamptz IS NULL OR c.last_message_at >= $3)
 		  AND ($4::timestamptz IS NULL OR c.last_message_at < $4)
@@ -169,11 +171,13 @@ func (s *Store) GetConversation(ctx context.Context, id string) (conversations.C
 	var conversation conversations.Conversation
 	row := s.pool.QueryRow(ctx, `
 		SELECT c.id::text, c.provider_conversation_id, COALESCE(c.contact_id::text, ''), c.type,
-		       c.title, c.last_message_at, c.created_at, c.updated_at,
-		       lm.id::text, lm.direction, lm.type, lm.text, lm.occurred_at
+		       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
+		       c.last_message_at, c.created_at, c.updated_at,
+		       lm.id::text, lm.direction, lm.type, lm.display_text, lm.occurred_at
 		FROM conversations c
+		LEFT JOIN contacts cc ON cc.id = c.contact_id
 		LEFT JOIN LATERAL (
-			SELECT id, direction, type, text, occurred_at
+			SELECT id, direction, type, COALESCE(NULLIF(text, ''), transcription_text) AS display_text, occurred_at
 			FROM messages WHERE conversation_id = c.id
 			ORDER BY occurred_at DESC, id DESC LIMIT 1
 		) lm ON true
@@ -223,7 +227,9 @@ func (s *Store) SearchMessages(ctx context.Context, params messages.SearchParams
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id::text, m.provider_message_id, m.conversation_id::text,
 		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
-		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, '')
+		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
+		       m.transcription_status, m.transcription_text, m.transcription_language,
+		       m.transcription_model, m.transcribed_at
 		FROM messages m
 		JOIN conversations conv ON conv.id = m.conversation_id
 		LEFT JOIN contacts c ON c.id = m.sender_contact_id
@@ -272,7 +278,9 @@ func (s *Store) GetMessage(ctx context.Context, id string) (messages.Message, er
 	message, err := scanMessage(s.pool.QueryRow(ctx, `
 		SELECT m.id::text, m.provider_message_id, m.conversation_id::text,
 		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
-		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, '')
+		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
+		       m.transcription_status, m.transcription_text, m.transcription_language,
+		       m.transcription_model, m.transcribed_at
 		FROM messages m LEFT JOIN contacts c ON c.id = m.sender_contact_id
 		WHERE m.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -311,7 +319,9 @@ func (s *Store) messagesRelative(ctx context.Context, anchor messages.Message, o
 	query := fmt.Sprintf(`
 		SELECT m.id::text, m.provider_message_id, m.conversation_id::text,
 		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
-		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, '')
+		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
+		       m.transcription_status, m.transcription_text, m.transcription_language,
+		       m.transcription_model, m.transcribed_at
 		FROM messages m LEFT JOIN contacts c ON c.id = m.sender_contact_id
 		WHERE m.conversation_id = $1 AND (m.occurred_at, m.id) %s ($2, $3::uuid)
 		ORDER BY m.occurred_at %s, m.id %s LIMIT $4`, operator, order, order)
@@ -337,10 +347,20 @@ type rowScanner interface {
 
 func scanMessage(row rowScanner) (messages.Message, error) {
 	var message messages.Message
+	var transcriptionStatus, transcriptionText, transcriptionLanguage, transcriptionModel string
+	var transcribedAt *time.Time
 	if err := row.Scan(&message.ID, &message.ProviderMessageID, &message.ConversationID,
 		&message.SenderContactID, &message.SenderName, &message.Direction, &message.Type,
-		&message.Text, &message.Status, &message.Timestamp, &message.ReplyToMessageID); err != nil {
+		&message.Text, &message.Status, &message.Timestamp, &message.ReplyToMessageID,
+		&transcriptionStatus, &transcriptionText, &transcriptionLanguage, &transcriptionModel,
+		&transcribedAt); err != nil {
 		return messages.Message{}, err
+	}
+	if transcriptionStatus != "" {
+		message.Transcription = &messages.Transcription{
+			Status: transcriptionStatus, Text: transcriptionText, Language: transcriptionLanguage,
+			Model: transcriptionModel, TranscribedAt: transcribedAt,
+		}
 	}
 	return message, nil
 }
