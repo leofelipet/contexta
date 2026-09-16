@@ -1,0 +1,292 @@
+package mcpserver
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/leofelipe/contexta/internal/auth"
+	"github.com/leofelipe/contexta/internal/contacts"
+	"github.com/leofelipe/contexta/internal/conversations"
+	"github.com/leofelipe/contexta/internal/messages"
+	"github.com/leofelipe/contexta/internal/pagination"
+	"github.com/leofelipe/contexta/internal/storage/postgres"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+type Store interface {
+	ListContacts(context.Context, contacts.ListParams) (contacts.Page, error)
+	GetContact(context.Context, string) (contacts.Contact, error)
+	ListConversations(context.Context, conversations.ListParams) (conversations.Page, error)
+	GetConversation(context.Context, string) (conversations.Conversation, error)
+	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
+	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
+}
+
+type server struct {
+	store  Store
+	logger *slog.Logger
+}
+
+func New(store Store, token string, logger *slog.Logger) http.Handler {
+	implementation := &server{store: store, logger: logger}
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: "0.1.0"}, nil)
+	implementation.addTools(mcpServer)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return mcpServer
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
+	return auth.NewMiddleware(token).Wrap(handler)
+}
+
+func (s *server) addTools(mcpServer *mcp.Server) {
+	mcp.AddTool(mcpServer, readOnlyTool("search_messages", "Search stored WhatsApp messages using text, time, contact, conversation, and direction filters."), s.searchMessages)
+	mcp.AddTool(mcpServer, readOnlyTool("find_conversations", "Find WhatsApp conversations by title, contact, or time range."), s.findConversations)
+	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID."), s.getConversation)
+	mcp.AddTool(mcpServer, readOnlyTool("get_messages", "Get a paginated page of messages from one conversation."), s.getMessages)
+	mcp.AddTool(mcpServer, readOnlyTool("get_messages_around", "Get messages immediately before and after a selected message for local context."), s.getMessagesAround)
+	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts."), s.listContacts)
+	mcp.AddTool(mcpServer, readOnlyTool("get_contact", "Get one contact by its Contexta contact ID."), s.getContact)
+}
+
+func readOnlyTool(name, description string) *mcp.Tool {
+	openWorld := false
+	destructive := false
+	return &mcp.Tool{
+		Name: name, Description: description,
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &openWorld, DestructiveHint: &destructive,
+		},
+	}
+}
+
+type searchMessagesInput struct {
+	Query          string `json:"query,omitempty" jsonschema:"Text to search for in message bodies."`
+	From           string `json:"from,omitempty" jsonschema:"Inclusive RFC3339 timestamp or YYYY-MM-DD date."`
+	To             string `json:"to,omitempty" jsonschema:"Exclusive RFC3339 timestamp or inclusive YYYY-MM-DD date."`
+	ContactID      string `json:"contact_id,omitempty" jsonschema:"Contexta contact ID."`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Contexta conversation ID."`
+	Direction      string `json:"direction,omitempty" jsonschema:"Message direction: inbound or outbound."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of messages, up to 100."`
+	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+type messagesOutput struct {
+	Messages   []messages.Message `json:"messages"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+}
+
+func (s *server) searchMessages(ctx context.Context, _ *mcp.CallToolRequest, input searchMessagesInput) (*mcp.CallToolResult, messagesOutput, error) {
+	s.logAccess("search_messages")
+	from, to, err := parseRange(input.From, input.To)
+	if err != nil {
+		return nil, messagesOutput{}, err
+	}
+	page, err := s.store.SearchMessages(ctx, messages.SearchParams{
+		Query: input.Query, From: from, To: to, ContactID: input.ContactID,
+		ConversationID: input.ConversationID, Direction: input.Direction,
+		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+	})
+	if err != nil {
+		s.logError("search_messages", err)
+		return nil, messagesOutput{}, safeToolError(err)
+	}
+	return nil, messagesOutput{Messages: page.Messages, NextCursor: page.NextCursor}, nil
+}
+
+type findConversationsInput struct {
+	Query     string `json:"query,omitempty" jsonschema:"Text to match against conversation title or provider ID."`
+	ContactID string `json:"contact_id,omitempty" jsonschema:"Contexta contact ID."`
+	From      string `json:"from,omitempty" jsonschema:"Inclusive RFC3339 timestamp or YYYY-MM-DD date."`
+	To        string `json:"to,omitempty" jsonschema:"Exclusive RFC3339 timestamp or inclusive YYYY-MM-DD date."`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum number of conversations, up to 100."`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+type conversationsOutput struct {
+	Conversations []conversations.Conversation `json:"conversations"`
+	NextCursor    string                       `json:"next_cursor,omitempty"`
+}
+
+func (s *server) findConversations(ctx context.Context, _ *mcp.CallToolRequest, input findConversationsInput) (*mcp.CallToolResult, conversationsOutput, error) {
+	s.logAccess("find_conversations")
+	from, to, err := parseRange(input.From, input.To)
+	if err != nil {
+		return nil, conversationsOutput{}, err
+	}
+	page, err := s.store.ListConversations(ctx, conversations.ListParams{
+		Query: input.Query, ContactID: input.ContactID, From: from, To: to,
+		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+	})
+	if err != nil {
+		s.logError("find_conversations", err)
+		return nil, conversationsOutput{}, safeToolError(err)
+	}
+	return nil, conversationsOutput{Conversations: page.Conversations, NextCursor: page.NextCursor}, nil
+}
+
+type idInput struct {
+	ID string `json:"id" jsonschema:"Required Contexta internal ID."`
+}
+
+type conversationOutput struct {
+	Conversation conversations.Conversation `json:"conversation"`
+}
+
+func (s *server) getConversation(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, conversationOutput, error) {
+	s.logAccess("get_conversation")
+	conversation, err := s.store.GetConversation(ctx, input.ID)
+	if err != nil {
+		s.logError("get_conversation", err)
+		return nil, conversationOutput{}, safeToolError(err)
+	}
+	return nil, conversationOutput{Conversation: conversation}, nil
+}
+
+type getMessagesInput struct {
+	ConversationID string `json:"conversation_id" jsonschema:"Required Contexta conversation ID."`
+	From           string `json:"from,omitempty" jsonschema:"Inclusive RFC3339 timestamp or YYYY-MM-DD date."`
+	To             string `json:"to,omitempty" jsonschema:"Exclusive RFC3339 timestamp or inclusive YYYY-MM-DD date."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of messages, up to 100."`
+	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+func (s *server) getMessages(ctx context.Context, _ *mcp.CallToolRequest, input getMessagesInput) (*mcp.CallToolResult, messagesOutput, error) {
+	s.logAccess("get_messages")
+	from, to, err := parseRange(input.From, input.To)
+	if err != nil {
+		return nil, messagesOutput{}, err
+	}
+	page, err := s.store.SearchMessages(ctx, messages.SearchParams{
+		ConversationID: input.ConversationID, From: from, To: to,
+		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+	})
+	if err != nil {
+		s.logError("get_messages", err)
+		return nil, messagesOutput{}, safeToolError(err)
+	}
+	return nil, messagesOutput{Messages: page.Messages, NextCursor: page.NextCursor}, nil
+}
+
+type aroundInput struct {
+	MessageID string `json:"message_id" jsonschema:"Required Contexta message ID."`
+	Before    int    `json:"before,omitempty" jsonschema:"Number of preceding messages, up to 50."`
+	After     int    `json:"after,omitempty" jsonschema:"Number of following messages, up to 50."`
+}
+
+type aroundOutput struct {
+	Previous []messages.Message `json:"previous"`
+	Message  messages.Message   `json:"message"`
+	Next     []messages.Message `json:"next"`
+}
+
+func (s *server) getMessagesAround(ctx context.Context, _ *mcp.CallToolRequest, input aroundInput) (*mcp.CallToolResult, aroundOutput, error) {
+	s.logAccess("get_messages_around")
+	around, err := s.store.GetMessagesAround(ctx, input.MessageID, aroundLimit(input.Before), aroundLimit(input.After))
+	if err != nil {
+		s.logError("get_messages_around", err)
+		return nil, aroundOutput{}, safeToolError(err)
+	}
+	return nil, aroundOutput{Previous: around.Previous, Message: around.Message, Next: around.Next}, nil
+}
+
+type listContactsInput struct {
+	Query  string `json:"query,omitempty" jsonschema:"Name or phone fragment."`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Maximum number of contacts, up to 100."`
+	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+type contactsOutput struct {
+	Contacts   []contacts.Contact `json:"contacts"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+}
+
+func (s *server) listContacts(ctx context.Context, _ *mcp.CallToolRequest, input listContactsInput) (*mcp.CallToolResult, contactsOutput, error) {
+	s.logAccess("list_contacts")
+	page, err := s.store.ListContacts(ctx, contacts.ListParams{Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor})
+	if err != nil {
+		s.logError("list_contacts", err)
+		return nil, contactsOutput{}, safeToolError(err)
+	}
+	return nil, contactsOutput{Contacts: page.Contacts, NextCursor: page.NextCursor}, nil
+}
+
+type contactOutput struct {
+	Contact contacts.Contact `json:"contact"`
+}
+
+func (s *server) getContact(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, contactOutput, error) {
+	s.logAccess("get_contact")
+	contact, err := s.store.GetContact(ctx, input.ID)
+	if err != nil {
+		s.logError("get_contact", err)
+		return nil, contactOutput{}, safeToolError(err)
+	}
+	return nil, contactOutput{Contact: contact}, nil
+}
+
+func (s *server) logError(tool string, err error) {
+	s.logger.Error("mcp tool failed", "tool", tool, "error", err)
+}
+
+func (s *server) logAccess(tool string) {
+	s.logger.Info("mcp tool called", "tool", tool)
+}
+
+func safeToolError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, postgres.ErrNotFound) {
+		return errors.New("not found")
+	}
+	if errors.Is(err, postgres.ErrInvalidArgument) || errors.Is(err, pagination.ErrInvalidCursor) {
+		return errors.New("invalid argument")
+	}
+	return errors.New("query failed")
+}
+
+func parseRange(fromValue, toValue string) (*time.Time, *time.Time, error) {
+	from, err := parseDateTime(fromValue, false)
+	if err != nil {
+		return nil, nil, errors.New("invalid from; expected RFC3339 or YYYY-MM-DD")
+	}
+	to, err := parseDateTime(toValue, true)
+	if err != nil {
+		return nil, nil, errors.New("invalid to; expected RFC3339 or YYYY-MM-DD")
+	}
+	return from, to, nil
+}
+
+func parseDateTime(value string, dateEnd bool) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		parsed = parsed.UTC()
+		return &parsed, nil
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return nil, err
+	}
+	if dateEnd {
+		parsed = parsed.AddDate(0, 0, 1)
+	}
+	return &parsed, nil
+}
+
+func mcpLimit(value int) int {
+	if value <= 0 {
+		return 20
+	}
+	return min(value, 100)
+}
+
+func aroundLimit(value int) int {
+	if value <= 0 {
+		return 10
+	}
+	return min(value, 50)
+}

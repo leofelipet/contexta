@@ -1,0 +1,5 @@
+.env
+.contexta-captures/
+bin/
+coverage.out
+*.test
