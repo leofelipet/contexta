@@ -23,6 +23,9 @@ func TestIngestionAndQueries(t *testing.T) {
 	if err := Migrate(ctx, databaseURL); err != nil {
 		t.Fatal(err)
 	}
+	if err := Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("second migration run: %v", err)
+	}
 	store, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)

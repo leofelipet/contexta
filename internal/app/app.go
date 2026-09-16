@@ -31,6 +31,9 @@ func Run(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("load configuration: %w", err)
 		}
+		if err := postgres.Migrate(ctx, cfg.DatabaseURL); err != nil {
+			return fmt.Errorf("migrate database: %w", err)
+		}
 		return serve(ctx, cfg)
 	case "migrate":
 		databaseURL := os.Getenv("DATABASE_URL")

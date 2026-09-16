@@ -9,6 +9,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/leofelipet/contexta/migrations"
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 type Store struct {
@@ -46,7 +47,16 @@ func Migrate(ctx context.Context, databaseURL string) error {
 	}
 	defer db.Close()
 
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	sessionLocker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("create migration lock: %w", err)
+	}
+	provider, err := goose.NewProvider(
+		goose.DialectPostgres,
+		db,
+		migrations.FS,
+		goose.WithSessionLocker(sessionLocker),
+	)
 	if err != nil {
 		return fmt.Errorf("create migration provider: %w", err)
 	}
