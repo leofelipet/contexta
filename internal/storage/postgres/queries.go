@@ -223,16 +223,28 @@ func (s *Store) SearchMessages(ctx context.Context, params messages.SearchParams
 	if params.Direction != "" && !slices.Contains([]string{"inbound", "outbound"}, params.Direction) {
 		return messages.Page{}, errors.New("direction must be inbound or outbound")
 	}
+	params.ReadState = strings.ToLower(strings.TrimSpace(params.ReadState))
+	if params.ConsumerID != "" && !validConsumerID(params.ConsumerID) {
+		return messages.Page{}, ErrInvalidArgument
+	}
+	if !slices.Contains([]string{"", "all", "read", "unread"}, params.ReadState) {
+		return messages.Page{}, ErrInvalidArgument
+	}
+	if (params.ReadState == "read" || params.ReadState == "unread") && params.ConsumerID == "" {
+		return messages.Page{}, ErrInvalidArgument
+	}
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id::text, m.provider_message_id, m.conversation_id::text,
 		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
 		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
 		       m.transcription_status, m.transcription_text, m.transcription_language,
-		       m.transcription_model, m.transcribed_at
+		       m.transcription_model, m.transcribed_at, receipt.read_at
 		FROM messages m
 		JOIN conversations conv ON conv.id = m.conversation_id
 		LEFT JOIN contacts c ON c.id = m.sender_contact_id
+		LEFT JOIN message_read_receipts receipt
+		  ON receipt.message_id = m.id AND receipt.consumer_id = $8
 		WHERE ($1 = '' OR m.search_vector @@ websearch_to_tsquery('simple'::regconfig, $1))
 		  AND ($2::timestamptz IS NULL OR m.occurred_at >= $2)
 		  AND ($3::timestamptz IS NULL OR m.occurred_at < $3)
@@ -240,11 +252,12 @@ func (s *Store) SearchMessages(ctx context.Context, params messages.SearchParams
 		  AND ($5::uuid IS NULL OR m.conversation_id = $5)
 		  AND ($6 = '' OR m.direction = $6)
 		  AND ($7 = '' OR m.type = $7)
-		  AND ($8::timestamptz IS NULL OR (m.occurred_at, m.id) < ($8, $9::uuid))
+		  AND ($9 IN ('', 'all') OR ($9 = 'read' AND receipt.message_id IS NOT NULL) OR ($9 = 'unread' AND receipt.message_id IS NULL))
+		  AND ($10::timestamptz IS NULL OR (m.occurred_at, m.id) < ($10, $11::uuid))
 		ORDER BY m.occurred_at DESC, m.id DESC
-		LIMIT $10`, params.Query, params.From, params.To, nullableUUID(params.ContactID),
+		LIMIT $12`, params.Query, params.From, params.To, nullableUUID(params.ContactID),
 		nullableUUID(params.ConversationID), params.Direction, params.Type,
-		nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
+		params.ConsumerID, params.ReadState, nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
 	if err != nil {
 		return messages.Page{}, fmt.Errorf("search messages: %w", err)
 	}
@@ -280,7 +293,7 @@ func (s *Store) GetMessage(ctx context.Context, id string) (messages.Message, er
 		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
 		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
 		       m.transcription_status, m.transcription_text, m.transcription_language,
-		       m.transcription_model, m.transcribed_at
+		       m.transcription_model, m.transcribed_at, NULL::timestamptz
 		FROM messages m LEFT JOIN contacts c ON c.id = m.sender_contact_id
 		WHERE m.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -321,7 +334,7 @@ func (s *Store) messagesRelative(ctx context.Context, anchor messages.Message, o
 		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
 		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
 		       m.transcription_status, m.transcription_text, m.transcription_language,
-		       m.transcription_model, m.transcribed_at
+		       m.transcription_model, m.transcribed_at, NULL::timestamptz
 		FROM messages m LEFT JOIN contacts c ON c.id = m.sender_contact_id
 		WHERE m.conversation_id = $1 AND (m.occurred_at, m.id) %s ($2, $3::uuid)
 		ORDER BY m.occurred_at %s, m.id %s LIMIT $4`, operator, order, order)
@@ -353,7 +366,7 @@ func scanMessage(row rowScanner) (messages.Message, error) {
 		&message.SenderContactID, &message.SenderName, &message.Direction, &message.Type,
 		&message.Text, &message.Status, &message.Timestamp, &message.ReplyToMessageID,
 		&transcriptionStatus, &transcriptionText, &transcriptionLanguage, &transcriptionModel,
-		&transcribedAt); err != nil {
+		&transcribedAt, &message.AgentReadAt); err != nil {
 		return messages.Message{}, err
 	}
 	if transcriptionStatus != "" {
@@ -363,6 +376,27 @@ func scanMessage(row rowScanner) (messages.Message, error) {
 		}
 	}
 	return message, nil
+}
+
+func scanUnreadMessage(row rowScanner) (messages.Message, time.Time, error) {
+	var message messages.Message
+	var transcriptionStatus, transcriptionText, transcriptionLanguage, transcriptionModel string
+	var transcribedAt *time.Time
+	var createdAt time.Time
+	if err := row.Scan(&message.ID, &message.ProviderMessageID, &message.ConversationID,
+		&message.SenderContactID, &message.SenderName, &message.Direction, &message.Type,
+		&message.Text, &message.Status, &message.Timestamp, &message.ReplyToMessageID,
+		&transcriptionStatus, &transcriptionText, &transcriptionLanguage, &transcriptionModel,
+		&transcribedAt, &message.AgentReadAt, &createdAt); err != nil {
+		return messages.Message{}, time.Time{}, err
+	}
+	if transcriptionStatus != "" {
+		message.Transcription = &messages.Transcription{
+			Status: transcriptionStatus, Text: transcriptionText, Language: transcriptionLanguage,
+			Model: transcriptionModel, TranscribedAt: transcribedAt,
+		}
+	}
+	return message, createdAt, nil
 }
 
 func normalizeLimit(value, fallback int) int {

@@ -15,6 +15,7 @@ type Message struct {
 	Timestamp         time.Time      `json:"timestamp"`
 	ReplyToMessageID  string         `json:"reply_to_message_id,omitempty"`
 	Transcription     *Transcription `json:"transcription,omitempty"`
+	AgentReadAt       *time.Time     `json:"agent_read_at,omitempty"`
 }
 
 type Transcription struct {
@@ -33,6 +34,18 @@ type SearchParams struct {
 	ConversationID string
 	Direction      string
 	Type           string
+	Limit          int
+	Cursor         string
+	ConsumerID     string
+	ReadState      string
+}
+
+type UnreadParams struct {
+	ConsumerID     string
+	ConversationID string
+	Direction      string
+	Type           string
+	Order          string
 	Limit          int
 	Cursor         string
 }

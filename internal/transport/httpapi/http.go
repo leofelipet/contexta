@@ -25,7 +25,10 @@ import (
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 )
 
-const maxWebhookBody = 2 << 20
+const (
+	maxWebhookBody  = 2 << 20
+	maxAPIWriteBody = 1 << 20
+)
 
 type Store interface {
 	Ping(context.Context) error
@@ -34,6 +37,8 @@ type Store interface {
 	ListConversations(context.Context, conversations.ListParams) (conversations.Page, error)
 	GetConversation(context.Context, string) (conversations.Conversation, error)
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
+	ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error)
+	AcknowledgeMessages(context.Context, string, []string) (int, error)
 	GetMessage(context.Context, string) (messages.Message, error)
 	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
 	Dashboard(context.Context) (admin.Dashboard, error)
@@ -86,6 +91,8 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/conversations/{id}", handler.getConversation)
 	api.HandleFunc("GET /api/v1/conversations/{id}/messages", handler.conversationMessages)
 	api.HandleFunc("GET /api/v1/messages", handler.searchMessages)
+	api.HandleFunc("GET /api/v1/messages/unread", handler.listUnreadMessages)
+	api.HandleFunc("POST /api/v1/messages/acknowledge", handler.acknowledgeMessages)
 	api.HandleFunc("GET /api/v1/messages/{id}", handler.getMessage)
 	api.HandleFunc("GET /api/v1/messages/{id}/around", handler.messagesAround)
 	api.HandleFunc("GET /api/v1/dashboard", handler.dashboard)
@@ -242,12 +249,46 @@ func (h *handler) searchMessagesWithConversation(w http.ResponseWriter, r *http.
 		ContactID: r.URL.Query().Get("contact_id"), ConversationID: conversationID,
 		Direction: r.URL.Query().Get("direction"), Type: r.URL.Query().Get("type"),
 		Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+		ConsumerID: r.URL.Query().Get("consumer_id"), ReadState: r.URL.Query().Get("read_state"),
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, pageResponse[messages.Message]{Data: page.Messages, NextCursor: page.NextCursor})
+}
+
+func (h *handler) listUnreadMessages(w http.ResponseWriter, r *http.Request) {
+	page, err := h.store.ListUnreadMessages(r.Context(), messages.UnreadParams{
+		ConsumerID: r.URL.Query().Get("consumer_id"), ConversationID: r.URL.Query().Get("conversation_id"),
+		Direction: r.URL.Query().Get("direction"), Type: r.URL.Query().Get("type"),
+		Order: r.URL.Query().Get("order"), Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pageResponse[messages.Message]{Data: page.Messages, NextCursor: page.NextCursor})
+}
+
+func (h *handler) acknowledgeMessages(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ConsumerID string   `json:"consumer_id"`
+		MessageIDs []string `json:"message_ids"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	acknowledged, err := h.store.AcknowledgeMessages(r.Context(), request.ConsumerID, request.MessageIDs)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{Category: "agent", Level: "info", Operation: "messages_acknowledged", Outcome: "success"})
+	writeJSON(w, http.StatusOK, map[string]int{"acknowledged": acknowledged})
 }
 
 func (h *handler) getMessage(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +410,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact"},
 		LastAccessAt: lastAccess,
 	})
 }

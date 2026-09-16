@@ -23,6 +23,8 @@ type Store interface {
 	ListConversations(context.Context, conversations.ListParams) (conversations.Page, error)
 	GetConversation(context.Context, string) (conversations.Conversation, error)
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
+	ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error)
+	AcknowledgeMessages(context.Context, string, []string) (int, error)
 	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
 	RecordActivity(context.Context, activity.Record) error
 }
@@ -43,13 +45,26 @@ func New(store Store, token string, logger *slog.Logger) http.Handler {
 }
 
 func (s *server) addTools(mcpServer *mcp.Server) {
-	mcp.AddTool(mcpServer, readOnlyTool("search_messages", "Search stored WhatsApp messages using text, time, contact, conversation, and direction filters."), s.searchMessages)
+	mcp.AddTool(mcpServer, readOnlyTool("search_messages", "Search stored WhatsApp messages using text, time, contact, conversation, direction, and agent read-state filters."), s.searchMessages)
+	mcp.AddTool(mcpServer, readOnlyTool("list_unread_messages", "List messages not yet acknowledged by a specific agent consumer. This does not mark them as read."), s.listUnreadMessages)
+	mcp.AddTool(mcpServer, localWriteTool("acknowledge_messages", "Mark a batch of messages as processed by a specific agent consumer without changing WhatsApp data."), s.acknowledgeMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("find_conversations", "Find WhatsApp conversations by title, contact, or time range."), s.findConversations)
 	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID."), s.getConversation)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages", "Get a paginated page of messages from one conversation."), s.getMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages_around", "Get messages immediately before and after a selected message for local context."), s.getMessagesAround)
 	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts."), s.listContacts)
 	mcp.AddTool(mcpServer, readOnlyTool("get_contact", "Get one contact by its Contexta contact ID."), s.getContact)
+}
+
+func localWriteTool(name, description string) *mcp.Tool {
+	openWorld := false
+	destructive := false
+	return &mcp.Tool{
+		Name: name, Description: description,
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint: false, IdempotentHint: true, OpenWorldHint: &openWorld, DestructiveHint: &destructive,
+		},
+	}
 }
 
 func readOnlyTool(name, description string) *mcp.Tool {
@@ -73,6 +88,8 @@ type searchMessagesInput struct {
 	Type           string `json:"type,omitempty" jsonschema:"Message type such as text, image, audio, or document."`
 	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of messages, up to 100."`
 	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+	ConsumerID     string `json:"consumer_id,omitempty" jsonschema:"Stable agent consumer ID, required when filtering by read state."`
+	ReadState      string `json:"read_state,omitempty" jsonschema:"Agent read state: all, read, or unread. Defaults to all."`
 }
 
 type messagesOutput struct {
@@ -90,12 +107,56 @@ func (s *server) searchMessages(ctx context.Context, _ *mcp.CallToolRequest, inp
 		Query: input.Query, From: from, To: to, ContactID: input.ContactID,
 		ConversationID: input.ConversationID, Direction: input.Direction,
 		Type: input.Type, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+		ConsumerID: input.ConsumerID, ReadState: input.ReadState,
 	})
 	if err != nil {
 		s.logError(ctx, "search_messages", err)
 		return nil, messagesOutput{}, safeToolError(err)
 	}
 	return nil, messagesOutput{Messages: page.Messages, NextCursor: page.NextCursor}, nil
+}
+
+type unreadMessagesInput struct {
+	ConsumerID     string `json:"consumer_id" jsonschema:"Required stable agent consumer ID using letters, numbers, dot, underscore, colon, or hyphen."`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation ID."`
+	Direction      string `json:"direction,omitempty" jsonschema:"Message direction: inbound or outbound."`
+	Type           string `json:"type,omitempty" jsonschema:"Message type such as text, image, audio, or document."`
+	Order          string `json:"order,omitempty" jsonschema:"Sort order: newest or oldest. Defaults to newest."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of messages, up to 100."`
+	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+func (s *server) listUnreadMessages(ctx context.Context, _ *mcp.CallToolRequest, input unreadMessagesInput) (*mcp.CallToolResult, messagesOutput, error) {
+	s.logAccess(ctx, "list_unread_messages")
+	page, err := s.store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: input.ConsumerID, ConversationID: input.ConversationID,
+		Direction: input.Direction, Type: input.Type, Order: input.Order,
+		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+	})
+	if err != nil {
+		s.logError(ctx, "list_unread_messages", err)
+		return nil, messagesOutput{}, safeToolError(err)
+	}
+	return nil, messagesOutput{Messages: page.Messages, NextCursor: page.NextCursor}, nil
+}
+
+type acknowledgeMessagesInput struct {
+	ConsumerID string   `json:"consumer_id" jsonschema:"Required stable agent consumer ID."`
+	MessageIDs []string `json:"message_ids" jsonschema:"One to 100 Contexta message IDs successfully processed by the agent."`
+}
+
+type acknowledgeMessagesOutput struct {
+	Acknowledged int `json:"acknowledged"`
+}
+
+func (s *server) acknowledgeMessages(ctx context.Context, _ *mcp.CallToolRequest, input acknowledgeMessagesInput) (*mcp.CallToolResult, acknowledgeMessagesOutput, error) {
+	s.logAccess(ctx, "acknowledge_messages")
+	acknowledged, err := s.store.AcknowledgeMessages(ctx, input.ConsumerID, input.MessageIDs)
+	if err != nil {
+		s.logError(ctx, "acknowledge_messages", err)
+		return nil, acknowledgeMessagesOutput{}, safeToolError(err)
+	}
+	return nil, acknowledgeMessagesOutput{Acknowledged: acknowledged}, nil
 }
 
 type findConversationsInput struct {

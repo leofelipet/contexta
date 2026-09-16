@@ -34,6 +34,12 @@ func (fakeStore) GetConversation(context.Context, string) (conversations.Convers
 func (fakeStore) SearchMessages(context.Context, messages.SearchParams) (messages.Page, error) {
 	return messages.Page{}, nil
 }
+func (fakeStore) ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error) {
+	return messages.Page{Messages: []messages.Message{{ID: "00000000-0000-0000-0000-000000000001"}}}, nil
+}
+func (fakeStore) AcknowledgeMessages(context.Context, string, []string) (int, error) {
+	return 1, nil
+}
 func (fakeStore) GetMessagesAround(context.Context, string, int, int) (messages.Around, error) {
 	return messages.Around{}, nil
 }
@@ -77,11 +83,18 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 7 {
-		t.Fatalf("tools = %d, want 7", len(tools.Tools))
+	if len(tools.Tools) != 9 {
+		t.Fatalf("tools = %d, want 9", len(tools.Tools))
 	}
 	for _, tool := range tools.Tools {
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+		if tool.Annotations == nil {
+			t.Fatalf("tool %s has no annotations", tool.Name)
+		}
+		if tool.Name == "acknowledge_messages" {
+			if tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || *tool.Annotations.DestructiveHint {
+				t.Fatalf("acknowledge annotations = %#v", tool.Annotations)
+			}
+		} else if !tool.Annotations.ReadOnlyHint {
 			t.Fatalf("tool %s is not marked read-only", tool.Name)
 		}
 	}
@@ -94,5 +107,14 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	}
 	if result.IsError || result.StructuredContent == nil {
 		t.Fatalf("result = %#v", result)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "acknowledge_messages", Arguments: map[string]any{
+			"consumer_id": "primary-agent", "message_ids": []string{"00000000-0000-0000-0000-000000000001"},
+		},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("acknowledge result = %#v, err = %v", result, err)
 	}
 }

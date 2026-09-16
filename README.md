@@ -1,6 +1,6 @@
 # Contexta
 
-Personal WhatsApp data platform and read-only MCP server. Contexta receives UAZAPI webhooks, keeps an independent PostgreSQL history, exposes an administrative REST API, and gives authenticated MCP clients progressive access to conversations.
+Personal WhatsApp data platform and authenticated MCP server. Contexta receives UAZAPI webhooks, keeps an independent PostgreSQL history, exposes an administrative REST API, and gives authenticated MCP clients progressive access to conversations.
 
 The administrative Next.js interface lives in the separate [contexta-web](https://github.com/leofelipet/contexta-web) repository.
 
@@ -86,6 +86,8 @@ GET /api/v1/conversations
 GET /api/v1/conversations/{id}
 GET /api/v1/conversations/{id}/messages
 GET /api/v1/messages
+GET /api/v1/messages/unread
+POST /api/v1/messages/acknowledge
 GET /api/v1/messages/{id}
 GET /api/v1/messages/{id}/around
 GET /api/v1/dashboard
@@ -95,7 +97,7 @@ GET /api/v1/mcp/status
 GET /api/v1/activity
 ```
 
-Common message filters are `query`, `from`, `to`, `contact_id`, `conversation_id`, `direction`, `type`, `limit`, and `cursor`. Dates accept RFC3339 or `YYYY-MM-DD` in UTC.
+Common message filters are `query`, `from`, `to`, `contact_id`, `conversation_id`, `direction`, `type`, `consumer_id`, `read_state`, `limit`, and `cursor`. Dates accept RFC3339 or `YYYY-MM-DD` in UTC.
 
 The Streamable HTTP MCP endpoint is:
 
@@ -104,10 +106,12 @@ POST /mcp
 Authorization: Bearer $MCP_BEARER_TOKEN
 ```
 
-Available read-only tools:
+Available tools:
 
 ```text
 search_messages
+list_unread_messages
+acknowledge_messages
 find_conversations
 get_conversation
 get_messages
@@ -115,6 +119,10 @@ get_messages_around
 list_contacts
 get_contact
 ```
+
+Message read state is tracked independently for each agent `consumer_id`. Use `list_unread_messages` to fetch pending work without changing state, then call `acknowledge_messages` only after processing succeeds. `search_messages` accepts optional `consumer_id` and `read_state` (`all`, `read`, or `unread`) filters. Existing search and conversation tools always remain available for historical access.
+
+All existing messages start unread for a new consumer. Audio messages with an active transcription job are held out of the unread queue until transcription completes or permanently fails. Acknowledgement only writes local read receipts; it never modifies or sends WhatsApp messages.
 
 ## Webhook fixtures
 
@@ -130,7 +138,7 @@ Captured files still contain private conversation data. Keep capture mode disabl
 - UAZAPI credentials and application tokens only come from environment variables.
 - Groq API keys, UAZAPI media keys, signed media URLs, audio bytes, and transcript contents are never logged.
 - Downloaded audio is size-limited, kept in memory only for processing, and is not persisted by Contexta.
-- MCP tools are read-only and expose response models rather than database metadata.
+- MCP message data is read-only. The only state-changing tool writes idempotent, per-agent local read receipts and cannot alter WhatsApp content.
 - Operational activity excludes message bodies, payloads, authentication headers, and secrets.
 
 Run checks with:

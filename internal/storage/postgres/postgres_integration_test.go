@@ -164,6 +164,58 @@ func TestIngestionAndQueries(t *testing.T) {
 		t.Fatalf("dashboard = %#v", dashboard)
 	}
 
+	unreadA, err := store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-a", ConversationID: conversationID, Order: "oldest", Limit: 10,
+	})
+	if err != nil || len(unreadA.Messages) != 3 {
+		t.Fatalf("agent-a unread = %#v, err=%v", unreadA, err)
+	}
+	unreadB, err := store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-b", ConversationID: conversationID, Limit: 10,
+	})
+	if err != nil || len(unreadB.Messages) != 3 {
+		t.Fatalf("agent-b unread = %#v, err=%v", unreadB, err)
+	}
+	firstUnreadPage, err := store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-pagination", ConversationID: conversationID, Order: "oldest", Limit: 2,
+	})
+	if err != nil || len(firstUnreadPage.Messages) != 2 || firstUnreadPage.NextCursor == "" {
+		t.Fatalf("first unread page = %#v, err=%v", firstUnreadPage, err)
+	}
+	secondUnreadPage, err := store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-pagination", ConversationID: conversationID, Order: "oldest",
+		Limit: 2, Cursor: firstUnreadPage.NextCursor,
+	})
+	if err != nil || len(secondUnreadPage.Messages) != 1 {
+		t.Fatalf("second unread page = %#v, err=%v", secondUnreadPage, err)
+	}
+	acknowledged, err := store.AcknowledgeMessages(ctx, "agent-a", []string{unreadA.Messages[0].ID, unreadA.Messages[1].ID})
+	if err != nil || acknowledged != 2 {
+		t.Fatalf("acknowledged = %d, err=%v", acknowledged, err)
+	}
+	acknowledged, err = store.AcknowledgeMessages(ctx, "agent-a", []string{unreadA.Messages[0].ID, unreadA.Messages[1].ID})
+	if err != nil || acknowledged != 2 {
+		t.Fatalf("idempotent acknowledged = %d, err=%v", acknowledged, err)
+	}
+	readMessages, err := store.SearchMessages(ctx, messages.SearchParams{
+		ConversationID: conversationID, ConsumerID: "agent-a", ReadState: "read", Limit: 10,
+	})
+	if err != nil || len(readMessages.Messages) != 2 || readMessages.Messages[0].AgentReadAt == nil {
+		t.Fatalf("read messages = %#v, err=%v", readMessages, err)
+	}
+	unreadMessages, err := store.SearchMessages(ctx, messages.SearchParams{
+		ConversationID: conversationID, ConsumerID: "agent-a", ReadState: "unread", Limit: 10,
+	})
+	if err != nil || len(unreadMessages.Messages) != 1 || unreadMessages.Messages[0].AgentReadAt != nil {
+		t.Fatalf("unread-filtered messages = %#v, err=%v", unreadMessages, err)
+	}
+	unreadA, err = store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-a", ConversationID: conversationID, Limit: 10,
+	})
+	if err != nil || len(unreadA.Messages) != 1 {
+		t.Fatalf("remaining unread = %#v, err=%v", unreadA, err)
+	}
+
 	audioID := "audio-" + suffix
 	_, err = store.IngestMessages(ctx, ingestion.Batch{
 		Provider: "uazapi", ProviderInstanceID: instance,
@@ -176,6 +228,12 @@ func TestIngestionAndQueries(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	unreadA, err = store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-a", ConversationID: conversationID, Limit: 10,
+	})
+	if err != nil || len(unreadA.Messages) != 1 {
+		t.Fatalf("pending audio should be hidden: %#v, err=%v", unreadA, err)
 	}
 	job, ok, err := store.ClaimTranscription(ctx, time.Minute)
 	if err != nil || !ok || job.ProviderMessageID != audioID {
@@ -194,5 +252,11 @@ func TestIngestionAndQueries(t *testing.T) {
 	conversationWithTranscript, err := store.GetConversation(ctx, conversationID)
 	if err != nil || conversationWithTranscript.LastMessage == nil || conversationWithTranscript.LastMessage.Text != transcriptText {
 		t.Fatalf("transcription preview = %#v, err=%v", conversationWithTranscript.LastMessage, err)
+	}
+	unreadA, err = store.ListUnreadMessages(ctx, messages.UnreadParams{
+		ConsumerID: "agent-a", ConversationID: conversationID, Limit: 10,
+	})
+	if err != nil || len(unreadA.Messages) != 2 {
+		t.Fatalf("completed audio should be unread: %#v, err=%v", unreadA, err)
 	}
 }
