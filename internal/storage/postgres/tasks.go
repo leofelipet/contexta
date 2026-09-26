@@ -61,7 +61,7 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		    NOT $8 OR (
 		      t.due_at IS NOT NULL
 		      AND t.due_at < now()
-		      AND t.status IN ('pending', 'in_progress')
+		      AND t.status IN ('pending', 'in_progress', 'blocked')
 		    )
 		  )
 		ORDER BY t.created_at DESC, t.id DESC
@@ -108,6 +108,11 @@ func (s *Store) GetTask(ctx context.Context, id string) (tasks.Task, error) {
 	if err != nil {
 		return tasks.Task{}, fmt.Errorf("get task: %w", err)
 	}
+	memories, err := s.ListTaskMemories(ctx, id)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	task.Memories = memories
 	return task, nil
 }
 
@@ -305,6 +310,87 @@ func (s *Store) DeleteTask(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) ListTaskMemories(ctx context.Context, taskID string) ([]tasks.MemoryRef, error) {
+	if !isUUID(taskID) {
+		return nil, ErrInvalidArgument
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id::text, m.title, m.source
+		FROM task_memories tm
+		JOIN memories m ON m.id = tm.memory_id
+		WHERE tm.task_id = $1
+		ORDER BY tm.created_at DESC, m.id DESC`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list task memories: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]tasks.MemoryRef, 0)
+	for rows.Next() {
+		var item tasks.MemoryRef
+		if err := rows.Scan(&item.ID, &item.Title, &item.Source); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task memories: %w", err)
+	}
+	return items, nil
+}
+
+func (s *Store) AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error) {
+	if !isUUID(taskID) || !isUUID(memoryID) {
+		return tasks.Task{}, ErrInvalidArgument
+	}
+	exists, err := s.entityExists(ctx, "tasks", taskID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	if !exists {
+		return tasks.Task{}, ErrNotFound
+	}
+	exists, err = s.entityExists(ctx, "memories", memoryID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	if !exists {
+		return tasks.Task{}, ErrNotFound
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO task_memories (task_id, memory_id)
+		VALUES ($1::uuid, $2::uuid)
+		ON CONFLICT DO NOTHING`, taskID, memoryID)
+	if err != nil {
+		return tasks.Task{}, fmt.Errorf("attach task memory: %w", err)
+	}
+	return s.GetTask(ctx, taskID)
+}
+
+func (s *Store) DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error) {
+	if !isUUID(taskID) || !isUUID(memoryID) {
+		return tasks.Task{}, ErrInvalidArgument
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM task_memories
+		WHERE task_id = $1::uuid AND memory_id = $2::uuid`, taskID, memoryID)
+	if err != nil {
+		return tasks.Task{}, fmt.Errorf("detach task memory: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Distinguish missing link vs missing task.
+		exists, err := s.entityExists(ctx, "tasks", taskID)
+		if err != nil {
+			return tasks.Task{}, err
+		}
+		if !exists {
+			return tasks.Task{}, ErrNotFound
+		}
+		return tasks.Task{}, ErrNotFound
+	}
+	return s.GetTask(ctx, taskID)
 }
 
 func (s *Store) entityExists(ctx context.Context, table, id string) (bool, error) {

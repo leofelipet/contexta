@@ -66,6 +66,12 @@ func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.
 	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Updated"}, nil
 }
 func (fakeStore) DeleteTask(context.Context, string) error { return nil }
+func (fakeStore) AttachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {
+	return tasks.Task{ID: taskID, Title: "Sample", Memories: []tasks.MemoryRef{{ID: "00000000-0000-0000-0000-000000000020", Title: "Note"}}}, nil
+}
+func (fakeStore) DetachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {
+	return tasks.Task{ID: taskID, Title: "Sample"}, nil
+}
 
 type fakeMemoryStore struct{}
 
@@ -129,19 +135,21 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 23 {
-		t.Fatalf("tools = %d, want 23", len(tools.Tools))
+	if len(tools.Tools) != 25 {
+		t.Fatalf("tools = %d, want 25", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
-		"acknowledge_messages": true,
-		"add_to_denylist":      true,
-		"remove_from_denylist": true,
-		"create_task":          true,
-		"update_task":          true,
-		"delete_task":          true,
-		"save_memory":          true,
-		"update_memory":        true,
-		"delete_memory":        true,
+		"acknowledge_messages":    true,
+		"add_to_denylist":         true,
+		"remove_from_denylist":    true,
+		"create_task":             true,
+		"update_task":             true,
+		"delete_task":             true,
+		"attach_memory_to_task":   true,
+		"detach_memory_from_task": true,
+		"save_memory":             true,
+		"update_memory":           true,
+		"delete_memory":           true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {

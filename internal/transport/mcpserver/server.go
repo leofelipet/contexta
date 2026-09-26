@@ -38,6 +38,8 @@ type Store interface {
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
 	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error)
 	DeleteTask(context.Context, string) error
+	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
+	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	RecordActivity(context.Context, activity.Record) error
 }
 
@@ -71,10 +73,12 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
 	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query, and overdue due dates."), s.listTasks)
-	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its Contexta task ID."), s.getTask)
+	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its Contexta task ID, including linked memories."), s.getTask)
 	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
 	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id."), s.updateTask)
 	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID."), s.deleteTask)
+	mcp.AddTool(mcpServer, localWriteTool("attach_memory_to_task", "Link an existing memory to a task. A task can have unlimited memories; the same memory may link to multiple tasks."), s.attachMemoryToTask)
+	mcp.AddTool(mcpServer, localWriteTool("detach_memory_from_task", "Remove the link between a task and a memory without deleting either."), s.detachMemoryFromTask)
 	mcp.AddTool(mcpServer, readOnlyTool("search_memories", "Semantic search over saved agent memories using embeddings. Prefer this for recall by meaning."), s.searchMemories)
 	mcp.AddTool(mcpServer, readOnlyTool("list_memories", "List saved memories with optional filters for conversation, contact, source, and text query."), s.listMemories)
 	mcp.AddTool(mcpServer, readOnlyTool("get_memory", "Get one memory by its Contexta memory ID."), s.getMemory)
@@ -378,7 +382,7 @@ func (s *server) removeFromDenylist(ctx context.Context, _ *mcp.CallToolRequest,
 }
 
 type listTasksInput struct {
-	Status         string `json:"status,omitempty" jsonschema:"Task status: pending, in_progress, done, or cancelled."`
+	Status         string `json:"status,omitempty" jsonschema:"Task status: pending, in_progress, blocked, done, or cancelled."`
 	Company        string `json:"company,omitempty" jsonschema:"Filter by company name substring."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
@@ -425,7 +429,7 @@ type createTaskInput struct {
 	Title          string `json:"title" jsonschema:"Required task title."`
 	Description    string `json:"description,omitempty" jsonschema:"Optional task description."`
 	Company        string `json:"company,omitempty" jsonschema:"Optional free-text company name."`
-	Status         string `json:"status,omitempty" jsonschema:"pending, in_progress, done, or cancelled. Defaults to pending."`
+	Status         string `json:"status,omitempty" jsonschema:"pending, in_progress, blocked, done, or cancelled. Defaults to pending."`
 	DueAt          string `json:"due_at,omitempty" jsonschema:"Optional due date as RFC3339 or YYYY-MM-DD."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID to link."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID to link."`
@@ -454,7 +458,7 @@ type updateTaskInput struct {
 	Title          *string `json:"title,omitempty" jsonschema:"New title."`
 	Description    *string `json:"description,omitempty" jsonschema:"New description."`
 	Company        *string `json:"company,omitempty" jsonschema:"New company name."`
-	Status         *string `json:"status,omitempty" jsonschema:"pending, in_progress, done, or cancelled."`
+	Status         *string `json:"status,omitempty" jsonschema:"pending, in_progress, blocked, done, or cancelled."`
 	DueAt          *string `json:"due_at,omitempty" jsonschema:"New due date as RFC3339 or YYYY-MM-DD. Empty string clears it."`
 	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
 	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
@@ -489,6 +493,36 @@ func (s *server) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, input d
 		return nil, deleteTaskOutput{}, safeToolError(err)
 	}
 	return nil, deleteTaskOutput{Deleted: true}, nil
+}
+
+type attachMemoryToTaskInput struct {
+	TaskID   string `json:"task_id" jsonschema:"Required Contexta task ID."`
+	MemoryID string `json:"memory_id" jsonschema:"Required Contexta memory ID to link."`
+}
+
+func (s *server) attachMemoryToTask(ctx context.Context, _ *mcp.CallToolRequest, input attachMemoryToTaskInput) (*mcp.CallToolResult, taskOutput, error) {
+	s.logAccess(ctx, "attach_memory_to_task")
+	task, err := s.store.AttachTaskMemory(ctx, input.TaskID, input.MemoryID)
+	if err != nil {
+		s.logError(ctx, "attach_memory_to_task", err)
+		return nil, taskOutput{}, safeToolError(err)
+	}
+	return nil, taskOutput{Task: task}, nil
+}
+
+type detachMemoryFromTaskInput struct {
+	TaskID   string `json:"task_id" jsonschema:"Required Contexta task ID."`
+	MemoryID string `json:"memory_id" jsonschema:"Required Contexta memory ID to unlink."`
+}
+
+func (s *server) detachMemoryFromTask(ctx context.Context, _ *mcp.CallToolRequest, input detachMemoryFromTaskInput) (*mcp.CallToolResult, taskOutput, error) {
+	s.logAccess(ctx, "detach_memory_from_task")
+	task, err := s.store.DetachTaskMemory(ctx, input.TaskID, input.MemoryID)
+	if err != nil {
+		s.logError(ctx, "detach_memory_from_task", err)
+		return nil, taskOutput{}, safeToolError(err)
+	}
+	return nil, taskOutput{Task: task}, nil
 }
 
 type searchMemoriesInput struct {

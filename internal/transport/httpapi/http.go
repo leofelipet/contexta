@@ -60,6 +60,8 @@ type Store interface {
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
 	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error)
 	DeleteTask(context.Context, string) error
+	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
+	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	SystemOverview(context.Context) (admin.SystemOverview, error)
 }
 
@@ -132,6 +134,8 @@ func New(options Options) http.Handler {
 	api.HandleFunc("POST /api/v1/tasks", handler.createTask)
 	api.HandleFunc("PATCH /api/v1/tasks/{id}", handler.updateTask)
 	api.HandleFunc("DELETE /api/v1/tasks/{id}", handler.deleteTask)
+	api.HandleFunc("POST /api/v1/tasks/{id}/memories", handler.attachTaskMemory)
+	api.HandleFunc("DELETE /api/v1/tasks/{id}/memories/{memory_id}", handler.detachTaskMemory)
 	api.HandleFunc("GET /api/v1/memories", handler.listMemories)
 	api.HandleFunc("POST /api/v1/memories/search", handler.searchMemories)
 	api.HandleFunc("GET /api/v1/memories/{id}", handler.getMemory)
@@ -596,6 +600,46 @@ func (h *handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
+type attachTaskMemoryRequest struct {
+	MemoryID string `json:"memory_id"`
+}
+
+func (h *handler) attachTaskMemory(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	var request attachTaskMemoryRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	task, err := h.store.AttachTaskMemory(r.Context(), taskID, request.MemoryID)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "task_memory_attached", Outcome: "success",
+		EntityType: "task", EntityID: task.ID,
+	})
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *handler) detachTaskMemory(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	memoryID := r.PathValue("memory_id")
+	task, err := h.store.DetachTaskMemory(r.Context(), taskID, memoryID)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "task_memory_detached", Outcome: "success",
+		EntityType: "task", EntityID: task.ID,
+	})
+	writeJSON(w, http.StatusOK, task)
+}
+
 func (h *handler) listMemories(w http.ResponseWriter, r *http.Request) {
 	if h.memories == nil {
 		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
@@ -842,7 +886,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "attach_memory_to_task", "detach_memory_from_task", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
 		LastAccessAt: lastAccess,
 	})
 }
