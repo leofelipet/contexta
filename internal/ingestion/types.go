@@ -73,12 +73,18 @@ type Store interface {
 	IngestMessages(context.Context, Batch) (Result, error)
 }
 
-type Service struct {
-	store Store
+// DenylistChecker reports provider conversation IDs that must not be persisted.
+type DenylistChecker interface {
+	DeniedConversationProviderIDs(ctx context.Context, providerInstanceExternalID string) (map[string]struct{}, error)
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
+type Service struct {
+	store    Store
+	denylist DenylistChecker
+}
+
+func NewService(store Store, denylist DenylistChecker) *Service {
+	return &Service{store: store, denylist: denylist}
 }
 
 func (s *Service) Ingest(ctx context.Context, batch Batch) (Result, error) {
@@ -93,7 +99,44 @@ func (s *Service) Ingest(ctx context.Context, batch Batch) (Result, error) {
 			return Result{}, fmt.Errorf("message %d: %w", i, err)
 		}
 	}
-	return s.store.IngestMessages(ctx, batch)
+
+	filtered, err := s.filterDenied(ctx, batch)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(filtered.Messages) == 0 {
+		return Result{}, nil
+	}
+	return s.store.IngestMessages(ctx, filtered)
+}
+
+func (s *Service) filterDenied(ctx context.Context, batch Batch) (Batch, error) {
+	if s.denylist == nil {
+		return batch, nil
+	}
+	denied, err := s.denylist.DeniedConversationProviderIDs(ctx, batch.ProviderInstanceID)
+	if err != nil {
+		return Batch{}, fmt.Errorf("load denylist: %w", err)
+	}
+	if len(denied) == 0 {
+		return batch, nil
+	}
+
+	kept := make([]Message, 0, len(batch.Messages))
+	for _, message := range batch.Messages {
+		providerID := strings.TrimSpace(message.Conversation.ProviderID)
+		if providerID == "" {
+			// Update-only events often lack chat id; keep existing behavior.
+			kept = append(kept, message)
+			continue
+		}
+		if _, blocked := denied[providerID]; blocked {
+			continue
+		}
+		kept = append(kept, message)
+	}
+	batch.Messages = kept
+	return batch, nil
 }
 
 func validateMessage(message Message) error {

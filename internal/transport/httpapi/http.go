@@ -18,11 +18,13 @@ import (
 	"github.com/leofelipet/contexta/internal/auth"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/ingestion"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/version"
 )
 
 const (
@@ -45,6 +47,9 @@ type Store interface {
 	LastActivityAt(context.Context, string) (*time.Time, error)
 	RecordActivity(context.Context, activity.Record) error
 	ListActivity(context.Context, activity.ListParams) (activity.Page, error)
+	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
+	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
+	RemoveDenylistEntry(context.Context, string) error
 }
 
 type UAZAPIClient interface {
@@ -96,6 +101,9 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/messages/{id}", handler.getMessage)
 	api.HandleFunc("GET /api/v1/messages/{id}/around", handler.messagesAround)
 	api.HandleFunc("GET /api/v1/dashboard", handler.dashboard)
+	api.HandleFunc("GET /api/v1/denylist", handler.listDenylist)
+	api.HandleFunc("POST /api/v1/denylist", handler.addDenylistEntry)
+	api.HandleFunc("DELETE /api/v1/denylist/{id}", handler.removeDenylistEntry)
 	api.HandleFunc("GET /api/v1/integrations/uazapi", handler.uazapiStatus)
 	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
@@ -316,6 +324,7 @@ func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		h.handleStoreError(w, err)
 		return
 	}
+	dashboard.Version = version.Version
 	dashboard.UAZAPIStatus = "unavailable"
 	if h.uazapi != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -325,6 +334,50 @@ func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (h *handler) listDenylist(w http.ResponseWriter, r *http.Request) {
+	page, err := h.store.ListDenylist(r.Context(), denylist.ListParams{
+		Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pageResponse[denylist.Entry]{Data: page.Entries, NextCursor: page.NextCursor})
+}
+
+func (h *handler) addDenylistEntry(w http.ResponseWriter, r *http.Request) {
+	var request denylist.AddParams
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	entry, err := h.store.AddDenylistEntry(r.Context(), request)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "denylist_added", Outcome: "success",
+		EntityType: "denylist", EntityID: entry.ID,
+	})
+	writeJSON(w, http.StatusOK, entry)
+}
+
+func (h *handler) removeDenylistEntry(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.store.RemoveDenylistEntry(r.Context(), id); err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "denylist_removed", Outcome: "success",
+		EntityType: "denylist", EntityID: id,
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"removed": true})
 }
 
 type uazapiStatusResponse struct {
@@ -410,7 +463,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist"},
 		LastAccessAt: lastAccess,
 	})
 }

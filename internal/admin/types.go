@@ -9,6 +9,7 @@ type Dashboard struct {
 	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
 	LastWebhookAt *time.Time `json:"last_webhook_at,omitempty"`
 	UAZAPIStatus  string     `json:"uazapi_status"`
+	Version       string     `json:"version"`
 }
 
 type MCPStatus struct {

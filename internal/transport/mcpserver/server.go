@@ -11,9 +11,11 @@ import (
 	"github.com/leofelipet/contexta/internal/auth"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -26,6 +28,9 @@ type Store interface {
 	ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error)
 	AcknowledgeMessages(context.Context, string, []string) (int, error)
 	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
+	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
+	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
+	RemoveDenylistEntry(context.Context, string) error
 	RecordActivity(context.Context, activity.Record) error
 }
 
@@ -36,7 +41,7 @@ type server struct {
 
 func New(store Store, token string, logger *slog.Logger) http.Handler {
 	implementation := &server{store: store, logger: logger}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: "0.1.0"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: version.Version}, nil)
 	implementation.addTools(mcpServer)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return mcpServer
@@ -54,6 +59,9 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages_around", "Get messages immediately before and after a selected message for local context."), s.getMessagesAround)
 	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts."), s.listContacts)
 	mcp.AddTool(mcpServer, readOnlyTool("get_contact", "Get one contact by its Contexta contact ID."), s.getContact)
+	mcp.AddTool(mcpServer, readOnlyTool("list_denylist", "List conversations and contacts blocked from message ingestion."), s.listDenylist)
+	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
+	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
 }
 
 func localWriteTool(name, description string) *mcp.Tool {
@@ -288,6 +296,65 @@ func (s *server) getContact(ctx context.Context, _ *mcp.CallToolRequest, input i
 		return nil, contactOutput{}, safeToolError(err)
 	}
 	return nil, contactOutput{Contact: contact}, nil
+}
+
+type listDenylistInput struct {
+	Limit  int    `json:"limit,omitempty" jsonschema:"Maximum number of entries, up to 100."`
+	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+type denylistOutput struct {
+	Entries    []denylist.Entry `json:"entries"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+}
+
+func (s *server) listDenylist(ctx context.Context, _ *mcp.CallToolRequest, input listDenylistInput) (*mcp.CallToolResult, denylistOutput, error) {
+	s.logAccess(ctx, "list_denylist")
+	page, err := s.store.ListDenylist(ctx, denylist.ListParams{Limit: mcpLimit(input.Limit), Cursor: input.Cursor})
+	if err != nil {
+		s.logError(ctx, "list_denylist", err)
+		return nil, denylistOutput{}, safeToolError(err)
+	}
+	return nil, denylistOutput{Entries: page.Entries, NextCursor: page.NextCursor}, nil
+}
+
+type addDenylistInput struct {
+	TargetType string `json:"target_type" jsonschema:"Required target type: conversation or contact."`
+	TargetID   string `json:"target_id" jsonschema:"Required Contexta conversation or contact UUID."`
+	Reason     string `json:"reason,omitempty" jsonschema:"Optional note explaining why the target is blocked."`
+}
+
+type denylistEntryOutput struct {
+	Entry denylist.Entry `json:"entry"`
+}
+
+func (s *server) addToDenylist(ctx context.Context, _ *mcp.CallToolRequest, input addDenylistInput) (*mcp.CallToolResult, denylistEntryOutput, error) {
+	s.logAccess(ctx, "add_to_denylist")
+	entry, err := s.store.AddDenylistEntry(ctx, denylist.AddParams{
+		TargetType: input.TargetType, TargetID: input.TargetID, Reason: input.Reason,
+	})
+	if err != nil {
+		s.logError(ctx, "add_to_denylist", err)
+		return nil, denylistEntryOutput{}, safeToolError(err)
+	}
+	return nil, denylistEntryOutput{Entry: entry}, nil
+}
+
+type removeDenylistInput struct {
+	ID string `json:"id" jsonschema:"Required denylist entry ID."`
+}
+
+type removeDenylistOutput struct {
+	Removed bool `json:"removed"`
+}
+
+func (s *server) removeFromDenylist(ctx context.Context, _ *mcp.CallToolRequest, input removeDenylistInput) (*mcp.CallToolResult, removeDenylistOutput, error) {
+	s.logAccess(ctx, "remove_from_denylist")
+	if err := s.store.RemoveDenylistEntry(ctx, input.ID); err != nil {
+		s.logError(ctx, "remove_from_denylist", err)
+		return nil, removeDenylistOutput{}, safeToolError(err)
+	}
+	return nil, removeDenylistOutput{Removed: true}, nil
 }
 
 func (s *server) logError(ctx context.Context, tool string, err error) {

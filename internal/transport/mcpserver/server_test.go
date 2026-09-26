@@ -11,6 +11,7 @@ import (
 	"github.com/leofelipet/contexta/internal/activity"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -43,6 +44,13 @@ func (fakeStore) AcknowledgeMessages(context.Context, string, []string) (int, er
 func (fakeStore) GetMessagesAround(context.Context, string, int, int) (messages.Around, error) {
 	return messages.Around{}, nil
 }
+func (fakeStore) ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error) {
+	return denylist.Page{}, nil
+}
+func (fakeStore) AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error) {
+	return denylist.Entry{ID: "denylist-1", TargetType: denylist.TargetConversation}, nil
+}
+func (fakeStore) RemoveDenylistEntry(context.Context, string) error { return nil }
 
 type bearerTransport struct {
 	token string
@@ -83,16 +91,21 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 9 {
-		t.Fatalf("tools = %d, want 9", len(tools.Tools))
+	if len(tools.Tools) != 12 {
+		t.Fatalf("tools = %d, want 12", len(tools.Tools))
+	}
+	writeTools := map[string]bool{
+		"acknowledge_messages": true,
+		"add_to_denylist":      true,
+		"remove_from_denylist": true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {
 			t.Fatalf("tool %s has no annotations", tool.Name)
 		}
-		if tool.Name == "acknowledge_messages" {
+		if writeTools[tool.Name] {
 			if tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || *tool.Annotations.DestructiveHint {
-				t.Fatalf("acknowledge annotations = %#v", tool.Annotations)
+				t.Fatalf("%s annotations = %#v", tool.Name, tool.Annotations)
 			}
 		} else if !tool.Annotations.ReadOnlyHint {
 			t.Fatalf("tool %s is not marked read-only", tool.Name)

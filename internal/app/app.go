@@ -80,7 +80,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 	}
 	defer store.Close()
 
-	ingestionService := ingestion.NewService(store)
+	ingestionService := ingestion.NewService(store, store)
 	uazapiClient := uazapi.NewClient(cfg.UAZAPI.BaseURL, cfg.UAZAPI.Token)
 	go syncChats(ctx, store, uazapiClient, cfg.UAZAPI.InstanceID, logger)
 	if cfg.Transcription.Enabled {
