@@ -57,13 +57,13 @@ func (fakeStore) ListTasks(context.Context, tasks.ListParams) (tasks.Page, error
 	return tasks.Page{}, nil
 }
 func (fakeStore) GetTask(context.Context, string) (tasks.Task, error) {
-	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Sample"}, nil
+	return tasks.Task{ID: "1", Title: "Sample"}, nil
 }
 func (fakeStore) CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error) {
-	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Sample"}, nil
+	return tasks.Task{ID: "1", Title: "Sample"}, nil
 }
 func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error) {
-	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Updated"}, nil
+	return tasks.Task{ID: "1", Title: "Updated"}, nil
 }
 func (fakeStore) DeleteTask(context.Context, string) error { return nil }
 func (fakeStore) AttachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {

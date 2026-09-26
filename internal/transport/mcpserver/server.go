@@ -73,7 +73,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
 	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query, and overdue due dates."), s.listTasks)
-	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its Contexta task ID, including linked memories."), s.getTask)
+	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its numeric Contexta task ID (1, 2, 3…), including linked memories."), s.getTask)
 	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
 	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id."), s.updateTask)
 	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID."), s.deleteTask)
@@ -411,11 +411,15 @@ func (s *server) listTasks(ctx context.Context, _ *mcp.CallToolRequest, input li
 	return nil, tasksOutput{Tasks: page.Tasks, NextCursor: page.NextCursor}, nil
 }
 
+type taskIDInput struct {
+	ID string `json:"id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
+}
+
 type taskOutput struct {
 	Task tasks.Task `json:"task"`
 }
 
-func (s *server) getTask(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, taskOutput, error) {
+func (s *server) getTask(ctx context.Context, _ *mcp.CallToolRequest, input taskIDInput) (*mcp.CallToolResult, taskOutput, error) {
 	s.logAccess(ctx, "get_task")
 	task, err := s.store.GetTask(ctx, input.ID)
 	if err != nil {
@@ -454,7 +458,7 @@ func (s *server) createTask(ctx context.Context, _ *mcp.CallToolRequest, input c
 }
 
 type updateTaskInput struct {
-	ID             string  `json:"id" jsonschema:"Required Contexta task ID."`
+	ID             string  `json:"id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
 	Title          *string `json:"title,omitempty" jsonschema:"New title."`
 	Description    *string `json:"description,omitempty" jsonschema:"New description."`
 	Company        *string `json:"company,omitempty" jsonschema:"New company name."`
@@ -479,7 +483,7 @@ func (s *server) updateTask(ctx context.Context, _ *mcp.CallToolRequest, input u
 }
 
 type deleteTaskInput struct {
-	ID string `json:"id" jsonschema:"Required Contexta task ID."`
+	ID string `json:"id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
 }
 
 type deleteTaskOutput struct {
@@ -496,8 +500,8 @@ func (s *server) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, input d
 }
 
 type attachMemoryToTaskInput struct {
-	TaskID   string `json:"task_id" jsonschema:"Required Contexta task ID."`
-	MemoryID string `json:"memory_id" jsonschema:"Required Contexta memory ID to link."`
+	TaskID   string `json:"task_id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
+	MemoryID string `json:"memory_id" jsonschema:"Required Contexta memory UUID to link."`
 }
 
 func (s *server) attachMemoryToTask(ctx context.Context, _ *mcp.CallToolRequest, input attachMemoryToTaskInput) (*mcp.CallToolResult, taskOutput, error) {
@@ -511,8 +515,8 @@ func (s *server) attachMemoryToTask(ctx context.Context, _ *mcp.CallToolRequest,
 }
 
 type detachMemoryFromTaskInput struct {
-	TaskID   string `json:"task_id" jsonschema:"Required Contexta task ID."`
-	MemoryID string `json:"memory_id" jsonschema:"Required Contexta memory ID to unlink."`
+	TaskID   string `json:"task_id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
+	MemoryID string `json:"memory_id" jsonschema:"Required Contexta memory UUID to unlink."`
 }
 
 func (s *server) detachMemoryFromTask(ctx context.Context, _ *mcp.CallToolRequest, input detachMemoryFromTaskInput) (*mcp.CallToolResult, taskOutput, error) {

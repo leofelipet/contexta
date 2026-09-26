@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 	if err != nil {
 		return tasks.Page{}, err
 	}
-	if params.Cursor != "" && (cursor.Time.IsZero() || !isUUID(cursor.ID)) {
+	if params.Cursor != "" && (cursor.Time.IsZero() || !isTaskID(cursor.ID)) {
 		return tasks.Page{}, pagination.ErrInvalidCursor
 	}
 	if params.Status != "" && !tasks.ValidStatus(params.Status) {
@@ -51,7 +52,7 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+taskSelectCols+taskJoins+`
-		WHERE ($1::timestamptz IS NULL OR (t.created_at, t.id) < ($1, $2::uuid))
+		WHERE ($1::timestamptz IS NULL OR (t.created_at, t.id) < ($1, $2::bigint))
 		  AND ($3 = '' OR t.status = $3)
 		  AND ($4 = '' OR t.company ILIKE '%' || $4 || '%')
 		  AND ($5::uuid IS NULL OR t.contact_id = $5::uuid)
@@ -66,7 +67,7 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		  )
 		ORDER BY t.created_at DESC, t.id DESC
 		LIMIT $9`,
-		nullableTime(cursor.Time), nullableUUID(cursor.ID),
+		nullableTime(cursor.Time), nullableTaskID(cursor.ID),
 		params.Status, company,
 		nullableUUID(params.ContactID), nullableUUID(params.ConversationID),
 		query, params.Overdue, limit+1,
@@ -97,10 +98,11 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 }
 
 func (s *Store) GetTask(ctx context.Context, id string) (tasks.Task, error) {
-	if !isUUID(id) {
-		return tasks.Task{}, ErrInvalidArgument
+	taskID, err := parseTaskID(id)
+	if err != nil {
+		return tasks.Task{}, err
 	}
-	row := s.pool.QueryRow(ctx, `SELECT `+taskSelectCols+taskJoins+` WHERE t.id = $1`, id)
+	row := s.pool.QueryRow(ctx, `SELECT `+taskSelectCols+taskJoins+` WHERE t.id = $1`, taskID)
 	task, err := scanTask(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tasks.Task{}, ErrNotFound
@@ -184,8 +186,9 @@ func (s *Store) CreateTask(ctx context.Context, params tasks.CreateParams) (task
 }
 
 func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdateParams) (tasks.Task, error) {
-	if !isUUID(id) {
-		return tasks.Task{}, ErrInvalidArgument
+	taskID, err := parseTaskID(id)
+	if err != nil {
+		return tasks.Task{}, err
 	}
 
 	current, err := s.GetTask(ctx, id)
@@ -286,7 +289,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 			contact_id = $8::uuid,
 			updated_at = now()
 		WHERE id = $1`,
-		id, title, description, company, status, dueAt,
+		taskID, title, description, company, status, dueAt,
 		nullableUUID(conversationID), nullableUUID(contactID),
 	)
 	if err != nil {
@@ -299,10 +302,11 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 }
 
 func (s *Store) DeleteTask(ctx context.Context, id string) error {
-	if !isUUID(id) {
-		return ErrInvalidArgument
+	taskID, err := parseTaskID(id)
+	if err != nil {
+		return err
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
+	tag, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, taskID)
 	if err != nil {
 		return fmt.Errorf("delete task: %w", err)
 	}
@@ -313,15 +317,16 @@ func (s *Store) DeleteTask(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListTaskMemories(ctx context.Context, taskID string) ([]tasks.MemoryRef, error) {
-	if !isUUID(taskID) {
-		return nil, ErrInvalidArgument
+	id, err := parseTaskID(taskID)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id::text, m.title, m.source
 		FROM task_memories tm
 		JOIN memories m ON m.id = tm.memory_id
 		WHERE tm.task_id = $1
-		ORDER BY tm.created_at DESC, m.id DESC`, taskID)
+		ORDER BY tm.created_at DESC, m.id DESC`, id)
 	if err != nil {
 		return nil, fmt.Errorf("list task memories: %w", err)
 	}
@@ -342,10 +347,14 @@ func (s *Store) ListTaskMemories(ctx context.Context, taskID string) ([]tasks.Me
 }
 
 func (s *Store) AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error) {
-	if !isUUID(taskID) || !isUUID(memoryID) {
+	id, err := parseTaskID(taskID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	if !isUUID(memoryID) {
 		return tasks.Task{}, ErrInvalidArgument
 	}
-	exists, err := s.entityExists(ctx, "tasks", taskID)
+	exists, err := s.taskExists(ctx, id)
 	if err != nil {
 		return tasks.Task{}, err
 	}
@@ -361,8 +370,8 @@ func (s *Store) AttachTaskMemory(ctx context.Context, taskID, memoryID string) (
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO task_memories (task_id, memory_id)
-		VALUES ($1::uuid, $2::uuid)
-		ON CONFLICT DO NOTHING`, taskID, memoryID)
+		VALUES ($1, $2::uuid)
+		ON CONFLICT DO NOTHING`, id, memoryID)
 	if err != nil {
 		return tasks.Task{}, fmt.Errorf("attach task memory: %w", err)
 	}
@@ -370,18 +379,21 @@ func (s *Store) AttachTaskMemory(ctx context.Context, taskID, memoryID string) (
 }
 
 func (s *Store) DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error) {
-	if !isUUID(taskID) || !isUUID(memoryID) {
+	id, err := parseTaskID(taskID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	if !isUUID(memoryID) {
 		return tasks.Task{}, ErrInvalidArgument
 	}
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM task_memories
-		WHERE task_id = $1::uuid AND memory_id = $2::uuid`, taskID, memoryID)
+		WHERE task_id = $1 AND memory_id = $2::uuid`, id, memoryID)
 	if err != nil {
 		return tasks.Task{}, fmt.Errorf("detach task memory: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		// Distinguish missing link vs missing task.
-		exists, err := s.entityExists(ctx, "tasks", taskID)
+		exists, err := s.taskExists(ctx, id)
 		if err != nil {
 			return tasks.Task{}, err
 		}
@@ -391,6 +403,14 @@ func (s *Store) DetachTaskMemory(ctx context.Context, taskID, memoryID string) (
 		return tasks.Task{}, ErrNotFound
 	}
 	return s.GetTask(ctx, taskID)
+}
+
+func (s *Store) taskExists(ctx context.Context, id int64) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check tasks exists: %w", err)
+	}
+	return exists, nil
 }
 
 func (s *Store) entityExists(ctx context.Context, table, id string) (bool, error) {
@@ -431,4 +451,29 @@ func parseTaskDueAt(value string) (*time.Time, error) {
 	}
 	utc := parsed.UTC()
 	return &utc, nil
+}
+
+func parseTaskID(value string) (int64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, ErrInvalidArgument
+	}
+	id, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil || id < 1 {
+		return 0, ErrInvalidArgument
+	}
+	return id, nil
+}
+
+func isTaskID(value string) bool {
+	_, err := parseTaskID(value)
+	return err == nil
+}
+
+func nullableTaskID(value string) any {
+	id, err := parseTaskID(value)
+	if err != nil {
+		return nil
+	}
+	return id
 }
