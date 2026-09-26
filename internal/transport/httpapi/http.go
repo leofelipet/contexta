@@ -50,6 +50,7 @@ type Store interface {
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
 	RemoveDenylistEntry(context.Context, string) error
+	SystemOverview(context.Context) (admin.SystemOverview, error)
 }
 
 type UAZAPIClient interface {
@@ -68,10 +69,15 @@ type Options struct {
 	WebhookPublicURL   string
 	UAZAPIClient       UAZAPIClient
 	MCPEnabled         bool
+	StartedAt          time.Time
 	Logger             *slog.Logger
 }
 
 func New(options Options) http.Handler {
+	startedAt := options.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
 	handler := &handler{
 		store:              options.Store,
 		ingestion:          options.Ingestion,
@@ -81,6 +87,7 @@ func New(options Options) http.Handler {
 		webhookPublicURL:   options.WebhookPublicURL,
 		uazapi:             options.UAZAPIClient,
 		mcpEnabled:         options.MCPEnabled,
+		startedAt:          startedAt,
 		logger:             options.Logger,
 	}
 
@@ -101,6 +108,7 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/messages/{id}", handler.getMessage)
 	api.HandleFunc("GET /api/v1/messages/{id}/around", handler.messagesAround)
 	api.HandleFunc("GET /api/v1/dashboard", handler.dashboard)
+	api.HandleFunc("GET /api/v1/system", handler.system)
 	api.HandleFunc("GET /api/v1/denylist", handler.listDenylist)
 	api.HandleFunc("POST /api/v1/denylist", handler.addDenylistEntry)
 	api.HandleFunc("DELETE /api/v1/denylist/{id}", handler.removeDenylistEntry)
@@ -122,6 +130,7 @@ type handler struct {
 	webhookPublicURL   string
 	uazapi             UAZAPIClient
 	mcpEnabled         bool
+	startedAt          time.Time
 	logger             *slog.Logger
 }
 
@@ -334,6 +343,18 @@ func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (h *handler) system(w http.ResponseWriter, r *http.Request) {
+	overview, err := h.store.SystemOverview(r.Context())
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	overview.GeneratedAt = time.Now().UTC()
+	overview.Version = version.Version
+	overview.StartedAt = h.startedAt
+	writeJSON(w, http.StatusOK, overview)
 }
 
 func (h *handler) listDenylist(w http.ResponseWriter, r *http.Request) {

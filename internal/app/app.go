@@ -92,7 +92,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		Store: store, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
-		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, Logger: logger,
+		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
 	})
 
 	root := http.NewServeMux()
