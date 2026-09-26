@@ -37,7 +37,9 @@ type Store interface {
 	ListContacts(context.Context, contacts.ListParams) (contacts.Page, error)
 	GetContact(context.Context, string) (contacts.Contact, error)
 	ListConversations(context.Context, conversations.ListParams) (conversations.Page, error)
+	ListStaleConversations(context.Context, conversations.StaleParams) (conversations.StalePage, error)
 	GetConversation(context.Context, string) (conversations.Conversation, error)
+	DeleteConversation(context.Context, string) (conversations.DeleteResult, error)
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
 	ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error)
 	AcknowledgeMessages(context.Context, string, []string) (int, error)
@@ -100,7 +102,9 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/contacts", handler.listContacts)
 	api.HandleFunc("GET /api/v1/contacts/{id}", handler.getContact)
 	api.HandleFunc("GET /api/v1/conversations", handler.listConversations)
+	api.HandleFunc("GET /api/v1/conversations/stale", handler.listStaleConversations)
 	api.HandleFunc("GET /api/v1/conversations/{id}", handler.getConversation)
+	api.HandleFunc("DELETE /api/v1/conversations/{id}", handler.deleteConversation)
 	api.HandleFunc("GET /api/v1/conversations/{id}/messages", handler.conversationMessages)
 	api.HandleFunc("GET /api/v1/messages", handler.searchMessages)
 	api.HandleFunc("GET /api/v1/messages/unread", handler.listUnreadMessages)
@@ -238,6 +242,20 @@ func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pageResponse[conversations.Conversation]{Data: page.Conversations, NextCursor: page.NextCursor})
 }
 
+func (h *handler) listStaleConversations(w http.ResponseWriter, r *http.Request) {
+	page, err := h.store.ListStaleConversations(r.Context(), conversations.StaleParams{
+		Days: parseIntDefault(r.URL.Query().Get("days"), 30),
+		Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": page.Conversations, "next_cursor": page.NextCursor, "days": page.Days,
+	})
+}
+
 func (h *handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	conversation, err := h.store.GetConversation(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -245,6 +263,20 @@ func (h *handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, conversation)
+}
+
+func (h *handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	result, err := h.store.DeleteConversation(r.Context(), id)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "conversation_deleted", Outcome: "success",
+		EntityType: "conversation", EntityID: id,
+	})
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *handler) conversationMessages(w http.ResponseWriter, r *http.Request) {
