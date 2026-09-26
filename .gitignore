@@ -1,4 +1,5 @@
 .env
+.opencode/opencode.json
 .contexta-captures/
 bin/
 coverage.out
