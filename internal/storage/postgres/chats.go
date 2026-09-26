@@ -18,41 +18,64 @@ func (s *Store) SyncChats(ctx context.Context, providerInstanceID string, profil
 	updated := 0
 	for _, profile := range profiles {
 		title := chatTitle(profile)
-		if title == "" {
-			continue
+		if title != "" {
+			tag, err := tx.Exec(ctx, `
+				UPDATE conversations c SET title = $4, updated_at = now()
+				FROM provider_instances pi
+				WHERE c.provider_instance_id = pi.id
+				  AND pi.provider = 'uazapi'
+				  AND pi.provider_instance_id = $1
+				  AND c.provider_conversation_id IN ($2, $3)`,
+				providerInstanceID, profile.JID, profile.LID, title)
+			if err != nil {
+				return 0, fmt.Errorf("sync conversation title: %w", err)
+			}
+			updated += int(tag.RowsAffected())
 		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE conversations c SET title = $4, updated_at = now()
-			FROM provider_instances pi
-			WHERE c.provider_instance_id = pi.id
-			  AND pi.provider = 'uazapi'
-			  AND pi.provider_instance_id = $1
-			  AND c.provider_conversation_id IN ($2, $3)`,
-			providerInstanceID, profile.JID, profile.LID, title)
-		if err != nil {
-			return 0, fmt.Errorf("sync conversation title: %w", err)
-		}
-		updated += int(tag.RowsAffected())
 
 		if profile.Group {
 			continue
 		}
-		if _, err := tx.Exec(ctx, `
+		contactName := firstNonEmptyString(profile.ContactName, profile.Name)
+		pushName := profile.PushName
+		if isWhatsAppIdentifier(contactName) {
+			contactName = ""
+		}
+		if isWhatsAppIdentifier(pushName) {
+			pushName = ""
+		}
+		if contactName == "" && pushName == "" && profile.Phone == "" {
+			continue
+		}
+		tag, err := tx.Exec(ctx, `
 			UPDATE contacts contact SET
 				phone = CASE WHEN $4 = '' THEN contact.phone ELSE $4 END,
 				name = CASE WHEN $5 = '' THEN contact.name ELSE $5 END,
 				push_name = CASE WHEN $6 = '' THEN contact.push_name ELSE $6 END,
 				updated_at = now()
-			FROM conversations c, provider_instances pi
-			WHERE c.contact_id = contact.id
-			  AND c.provider_instance_id = pi.id
+			FROM provider_instances pi
+			WHERE contact.provider_instance_id = pi.id
 			  AND pi.provider = 'uazapi'
 			  AND pi.provider_instance_id = $1
-			  AND c.provider_conversation_id IN ($2, $3)`,
-			providerInstanceID, profile.JID, profile.LID, profile.Phone,
-			firstNonEmptyString(profile.ContactName, profile.Name), profile.PushName); err != nil {
+			  AND (
+			    contact.provider_contact_id IN ($2, $3)
+			    OR EXISTS (
+			      SELECT 1 FROM contact_identities ci
+			      WHERE ci.contact_id = contact.id
+			        AND ci.identity IN ($2, $3)
+			    )
+			    OR EXISTS (
+			      SELECT 1 FROM conversations c
+			      WHERE c.contact_id = contact.id
+			        AND c.provider_instance_id = pi.id
+			        AND c.provider_conversation_id IN ($2, $3)
+			    )
+			  )`,
+			providerInstanceID, profile.JID, profile.LID, profile.Phone, contactName, pushName)
+		if err != nil {
 			return 0, fmt.Errorf("sync conversation contact: %w", err)
 		}
+		updated += int(tag.RowsAffected())
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit chat sync: %w", err)

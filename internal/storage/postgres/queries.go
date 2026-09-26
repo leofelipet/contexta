@@ -31,12 +31,16 @@ func (s *Store) ListContacts(ctx context.Context, params contacts.ListParams) (c
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, provider_contact_id, phone, name, push_name,
-		       profile_picture_url, created_at, updated_at
-		FROM contacts
-		WHERE ($1 = '' OR name ILIKE '%' || $1 || '%' OR phone ILIKE '%' || $1 || '%')
-		  AND ($2 = '' OR (lower(name), id) > (lower($2), $3::uuid))
-		ORDER BY lower(name), id
+		SELECT c.id::text, c.provider_contact_id, c.phone,
+		       `+contactDisplayNameSQL("c")+` AS display_name,
+		       c.push_name, c.profile_picture_url, c.created_at, c.updated_at
+		FROM contacts c
+		WHERE ($1 = '' OR `+contactDisplayNameSQL("c")+` ILIKE '%' || $1 || '%'
+		           OR c.phone ILIKE '%' || $1 || '%'
+		           OR c.name ILIKE '%' || $1 || '%'
+		           OR c.push_name ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR (lower(`+contactDisplayNameSQL("c")+`), c.id) > (lower($2), $3::uuid))
+		ORDER BY lower(`+contactDisplayNameSQL("c")+`), c.id
 		LIMIT $4`, params.Query, cursor.Text, nullableUUID(cursor.ID), limit+1)
 	if err != nil {
 		return contacts.Page{}, fmt.Errorf("list contacts: %w", err)
@@ -71,9 +75,10 @@ func (s *Store) GetContact(ctx context.Context, id string) (contacts.Contact, er
 	}
 	var contact contacts.Contact
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, provider_contact_id, phone, name, push_name,
-		       profile_picture_url, created_at, updated_at
-		FROM contacts WHERE id = $1`, id).Scan(
+		SELECT c.id::text, c.provider_contact_id, c.phone,
+		       `+contactDisplayNameSQL("c")+` AS display_name,
+		       c.push_name, c.profile_picture_url, c.created_at, c.updated_at
+		FROM contacts c WHERE c.id = $1`, id).Scan(
 		&contact.ID, &contact.ProviderContactID, &contact.Phone, &contact.Name,
 		&contact.PushName, &contact.ProfilePictureURL, &contact.CreatedAt, &contact.UpdatedAt,
 	)
@@ -84,6 +89,25 @@ func (s *Store) GetContact(ctx context.Context, id string) (contacts.Contact, er
 		return contacts.Contact{}, fmt.Errorf("get contact: %w", err)
 	}
 	return contact, nil
+}
+
+// contactDisplayNameSQL prefers saved names, then a human conversation title, never raw JIDs.
+func contactDisplayNameSQL(alias string) string {
+	return `COALESCE(
+		NULLIF(` + alias + `.name, ''),
+		NULLIF(` + alias + `.push_name, ''),
+		NULLIF((
+			SELECT conv.title
+			FROM conversations conv
+			WHERE conv.contact_id = ` + alias + `.id
+			  AND conv.title <> ''
+			  AND conv.title IS DISTINCT FROM ` + alias + `.phone
+			  AND conv.title NOT LIKE '%@%'
+			ORDER BY conv.last_message_at DESC NULLS LAST
+			LIMIT 1
+		), ''),
+		''
+	)`
 }
 
 func (s *Store) ListConversations(ctx context.Context, params conversations.ListParams) (conversations.Page, error) {
