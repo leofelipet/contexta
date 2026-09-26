@@ -20,6 +20,7 @@ import (
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
@@ -70,6 +71,7 @@ type UAZAPIClient interface {
 
 type Options struct {
 	Store              Store
+	Memories           *memories.Service
 	Ingestion          *ingestion.Service
 	APIToken           string
 	WebhookSecret      string
@@ -89,6 +91,7 @@ func New(options Options) http.Handler {
 	}
 	handler := &handler{
 		store:              options.Store,
+		memories:           options.Memories,
 		ingestion:          options.Ingestion,
 		webhookSecret:      options.WebhookSecret,
 		providerInstanceID: options.ProviderInstanceID,
@@ -129,6 +132,12 @@ func New(options Options) http.Handler {
 	api.HandleFunc("POST /api/v1/tasks", handler.createTask)
 	api.HandleFunc("PATCH /api/v1/tasks/{id}", handler.updateTask)
 	api.HandleFunc("DELETE /api/v1/tasks/{id}", handler.deleteTask)
+	api.HandleFunc("GET /api/v1/memories", handler.listMemories)
+	api.HandleFunc("POST /api/v1/memories/search", handler.searchMemories)
+	api.HandleFunc("GET /api/v1/memories/{id}", handler.getMemory)
+	api.HandleFunc("POST /api/v1/memories", handler.createMemory)
+	api.HandleFunc("PATCH /api/v1/memories/{id}", handler.updateMemory)
+	api.HandleFunc("DELETE /api/v1/memories/{id}", handler.deleteMemory)
 	api.HandleFunc("GET /api/v1/integrations/uazapi", handler.uazapiStatus)
 	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
@@ -140,6 +149,7 @@ func New(options Options) http.Handler {
 
 type handler struct {
 	store              Store
+	memories           *memories.Service
 	ingestion          *ingestion.Service
 	webhookSecret      string
 	providerInstanceID string
@@ -586,6 +596,158 @@ func (h *handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
+func (h *handler) listMemories(w http.ResponseWriter, r *http.Request) {
+	if h.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
+		return
+	}
+	query := r.URL.Query()
+	page, err := h.memories.List(r.Context(), memories.ListParams{
+		ConversationID: query.Get("conversation_id"),
+		ContactID:      query.Get("contact_id"),
+		Source:         query.Get("source"),
+		Query:          query.Get("q"),
+		Limit:          parseLimit(r),
+		Cursor:         query.Get("cursor"),
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pageResponse[memories.Memory]{Data: page.Memories, NextCursor: page.NextCursor})
+}
+
+func (h *handler) getMemory(w http.ResponseWriter, r *http.Request) {
+	if h.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
+		return
+	}
+	memory, err := h.memories.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, memory)
+}
+
+type createMemoryRequest struct {
+	Title          string `json:"title"`
+	Content        string `json:"content"`
+	Source         string `json:"source"`
+	MessageID      string `json:"message_id"`
+	ConversationID string `json:"conversation_id"`
+	ContactID      string `json:"contact_id"`
+}
+
+func (h *handler) createMemory(w http.ResponseWriter, r *http.Request) {
+	if h.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
+		return
+	}
+	var request createMemoryRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	memory, err := h.memories.Create(r.Context(), memories.CreateParams{
+		Title: request.Title, Content: request.Content, Source: request.Source,
+		MessageID: request.MessageID, ConversationID: request.ConversationID, ContactID: request.ContactID,
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "memory_created", Outcome: "success",
+		EntityType: "memory", EntityID: memory.ID,
+	})
+	writeJSON(w, http.StatusOK, memory)
+}
+
+type updateMemoryRequest struct {
+	Title          *string `json:"title"`
+	Content        *string `json:"content"`
+	ConversationID *string `json:"conversation_id"`
+	ContactID      *string `json:"contact_id"`
+}
+
+func (h *handler) updateMemory(w http.ResponseWriter, r *http.Request) {
+	if h.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	var request updateMemoryRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	memory, err := h.memories.Update(r.Context(), id, memories.UpdateParams{
+		Title: request.Title, Content: request.Content,
+		ConversationID: request.ConversationID, ContactID: request.ContactID,
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "memory_updated", Outcome: "success",
+		EntityType: "memory", EntityID: memory.ID,
+	})
+	writeJSON(w, http.StatusOK, memory)
+}
+
+func (h *handler) deleteMemory(w http.ResponseWriter, r *http.Request) {
+	if h.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if err := h.memories.Delete(r.Context(), id); err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "memory_deleted", Outcome: "success",
+		EntityType: "memory", EntityID: id,
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+type searchMemoriesRequest struct {
+	Query          string `json:"query"`
+	ConversationID string `json:"conversation_id"`
+	ContactID      string `json:"contact_id"`
+	Limit          int    `json:"limit"`
+}
+
+func (h *handler) searchMemories(w http.ResponseWriter, r *http.Request) {
+	if h.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "memories unavailable")
+		return
+	}
+	var request searchMemoriesRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	result, err := h.memories.Search(r.Context(), memories.SearchParams{
+		Query: request.Query, ConversationID: request.ConversationID,
+		ContactID: request.ContactID, Limit: request.Limit,
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func parseOptionalDueAt(value *string) (*time.Time, error) {
 	if value == nil {
 		return nil, nil
@@ -680,7 +842,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
 		LastAccessAt: lastAccess,
 	})
 }
@@ -722,7 +884,9 @@ func (h *handler) handleStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, postgres.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, postgres.ErrInvalidArgument), errors.Is(err, pagination.ErrInvalidCursor), strings.Contains(err.Error(), "direction must"):
+	case errors.Is(err, postgres.ErrInvalidArgument), errors.Is(err, pagination.ErrInvalidCursor),
+		errors.Is(err, memories.ErrInvalidContent), errors.Is(err, memories.ErrEmbedderUnavailable),
+		strings.Contains(err.Error(), "direction must"):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		h.logger.Error("request failed", "error", err)

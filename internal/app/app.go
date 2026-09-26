@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/leofelipet/contexta/internal/config"
+	"github.com/leofelipet/contexta/internal/embeddings"
 	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/providers/transcription/groq"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
@@ -81,6 +83,8 @@ func serve(ctx context.Context, cfg config.Config) error {
 	defer store.Close()
 
 	ingestionService := ingestion.NewService(store, store)
+	embedder := embeddings.NewOpenRouter(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL, cfg.OpenRouter.EmbeddingModel)
+	memoriesService := memories.NewService(store, embedder)
 	uazapiClient := uazapi.NewClient(cfg.UAZAPI.BaseURL, cfg.UAZAPI.Token)
 	go syncChats(ctx, store, uazapiClient, cfg.UAZAPI.InstanceID, logger)
 	if cfg.Transcription.Enabled {
@@ -89,7 +93,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		go worker.Run(ctx)
 	}
 	apiHandler := httpapi.New(httpapi.Options{
-		Store: store, Ingestion: ingestionService, APIToken: cfg.APIToken,
+		Store: store, Memories: memoriesService, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
 		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
@@ -97,7 +101,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 
 	root := http.NewServeMux()
 	if cfg.MCPEnabled {
-		root.Handle("/mcp", mcpserver.New(store, cfg.MCPToken, logger))
+		root.Handle("/mcp", mcpserver.New(store, memoriesService, cfg.MCPToken, logger))
 	}
 	root.Handle("/", apiHandler)
 

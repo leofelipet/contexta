@@ -12,6 +12,7 @@ import (
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
+	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -66,6 +67,28 @@ func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.
 }
 func (fakeStore) DeleteTask(context.Context, string) error { return nil }
 
+type fakeMemoryStore struct{}
+
+func (fakeMemoryStore) ListMemories(context.Context, memories.ListParams) (memories.Page, error) {
+	return memories.Page{Memories: []memories.Memory{{ID: "00000000-0000-0000-0000-000000000020", Title: "Note", Content: "hello", Source: memories.SourceNote, EmbeddingStatus: memories.EmbeddingReady}}}, nil
+}
+func (fakeMemoryStore) GetMemory(_ context.Context, id string) (memories.Memory, error) {
+	return memories.Memory{ID: id, Title: "Note", Content: "hello", Source: memories.SourceNote, EmbeddingStatus: memories.EmbeddingReady}, nil
+}
+func (fakeMemoryStore) ResolveMessageMemoryContent(context.Context, string) (string, string, string, error) {
+	return "message body", "", "", nil
+}
+func (fakeMemoryStore) CreateMemory(_ context.Context, params memories.CreateParams, _ []float32, _ string, _ error) (memories.Memory, error) {
+	return memories.Memory{ID: "00000000-0000-0000-0000-000000000020", Title: params.Title, Content: params.Content, Source: memories.SourceNote, EmbeddingStatus: memories.EmbeddingFailed}, nil
+}
+func (fakeMemoryStore) UpdateMemory(_ context.Context, id string, _ memories.UpdateParams, _ []float32, _ string, _ error, _ bool) (memories.Memory, error) {
+	return memories.Memory{ID: id, Title: "Updated", Content: "hello", Source: memories.SourceNote, EmbeddingStatus: memories.EmbeddingReady}, nil
+}
+func (fakeMemoryStore) DeleteMemory(context.Context, string) error { return nil }
+func (fakeMemoryStore) SearchMemories(context.Context, memories.SearchParams, []float32) (memories.SearchResult, error) {
+	return memories.SearchResult{}, nil
+}
+
 type bearerTransport struct {
 	token string
 }
@@ -79,7 +102,8 @@ func (t bearerTransport) RoundTrip(request *http.Request) (*http.Response, error
 func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	httpServer := httptest.NewServer(New(fakeStore{}, "test-token", logger))
+	memoriesService := memories.NewService(fakeMemoryStore{}, nil)
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, "test-token", logger))
 	defer httpServer.Close()
 
 	unauthorized, err := http.Get(httpServer.URL)
@@ -105,8 +129,8 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 17 {
-		t.Fatalf("tools = %d, want 17", len(tools.Tools))
+	if len(tools.Tools) != 23 {
+		t.Fatalf("tools = %d, want 23", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages": true,
@@ -115,6 +139,9 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 		"create_task":          true,
 		"update_task":          true,
 		"delete_task":          true,
+		"save_memory":          true,
+		"update_memory":        true,
+		"delete_memory":        true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {
@@ -146,5 +173,21 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	})
 	if err != nil || result.IsError || result.StructuredContent == nil {
 		t.Fatalf("acknowledge result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "save_memory", Arguments: map[string]any{
+			"title": "Preferência", "content": "Cliente prefere contato pela manhã",
+		},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("save_memory result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "list_memories", Arguments: map[string]any{"limit": 10},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("list_memories result = %#v, err = %v", result, err)
 	}
 }

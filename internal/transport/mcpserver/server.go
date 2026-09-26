@@ -12,6 +12,7 @@ import (
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
+	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
@@ -41,12 +42,13 @@ type Store interface {
 }
 
 type server struct {
-	store  Store
-	logger *slog.Logger
+	store    Store
+	memories *memories.Service
+	logger   *slog.Logger
 }
 
-func New(store Store, token string, logger *slog.Logger) http.Handler {
-	implementation := &server{store: store, logger: logger}
+func New(store Store, memoriesService *memories.Service, token string, logger *slog.Logger) http.Handler {
+	implementation := &server{store: store, memories: memoriesService, logger: logger}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: version.Version}, nil)
 	implementation.addTools(mcpServer)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
@@ -73,6 +75,12 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
 	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id."), s.updateTask)
 	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID."), s.deleteTask)
+	mcp.AddTool(mcpServer, readOnlyTool("search_memories", "Semantic search over saved agent memories using embeddings. Prefer this for recall by meaning."), s.searchMemories)
+	mcp.AddTool(mcpServer, readOnlyTool("list_memories", "List saved memories with optional filters for conversation, contact, source, and text query."), s.listMemories)
+	mcp.AddTool(mcpServer, readOnlyTool("get_memory", "Get one memory by its Contexta memory ID."), s.getMemory)
+	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically."), s.saveMemory)
+	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links. Changing content re-embeds the memory."), s.updateMemory)
+	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
 }
 
 func localWriteTool(name, description string) *mcp.Tool {
@@ -483,6 +491,147 @@ func (s *server) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, input d
 	return nil, deleteTaskOutput{Deleted: true}, nil
 }
 
+type searchMemoriesInput struct {
+	Query          string `json:"query" jsonschema:"Required natural-language query for semantic recall."`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID filter."`
+	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID filter."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum hits, up to 50."`
+}
+
+type memoriesSearchOutput struct {
+	Hits []memories.SearchHit `json:"hits"`
+}
+
+func (s *server) searchMemories(ctx context.Context, _ *mcp.CallToolRequest, input searchMemoriesInput) (*mcp.CallToolResult, memoriesSearchOutput, error) {
+	s.logAccess(ctx, "search_memories")
+	if s.memories == nil {
+		return nil, memoriesSearchOutput{}, errors.New("memories unavailable")
+	}
+	result, err := s.memories.Search(ctx, memories.SearchParams{
+		Query: input.Query, ConversationID: input.ConversationID, ContactID: input.ContactID, Limit: input.Limit,
+	})
+	if err != nil {
+		s.logError(ctx, "search_memories", err)
+		return nil, memoriesSearchOutput{}, safeToolError(err)
+	}
+	return nil, memoriesSearchOutput{Hits: result.Hits}, nil
+}
+
+type listMemoriesInput struct {
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
+	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
+	Source         string `json:"source,omitempty" jsonschema:"note or message."`
+	Query          string `json:"query,omitempty" jsonschema:"Substring search against title and content."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of memories, up to 100."`
+	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+type memoriesOutput struct {
+	Memories   []memories.Memory `json:"memories"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
+func (s *server) listMemories(ctx context.Context, _ *mcp.CallToolRequest, input listMemoriesInput) (*mcp.CallToolResult, memoriesOutput, error) {
+	s.logAccess(ctx, "list_memories")
+	if s.memories == nil {
+		return nil, memoriesOutput{}, errors.New("memories unavailable")
+	}
+	page, err := s.memories.List(ctx, memories.ListParams{
+		ConversationID: input.ConversationID, ContactID: input.ContactID, Source: input.Source,
+		Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+	})
+	if err != nil {
+		s.logError(ctx, "list_memories", err)
+		return nil, memoriesOutput{}, safeToolError(err)
+	}
+	return nil, memoriesOutput{Memories: page.Memories, NextCursor: page.NextCursor}, nil
+}
+
+type memoryOutput struct {
+	Memory memories.Memory `json:"memory"`
+}
+
+func (s *server) getMemory(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, memoryOutput, error) {
+	s.logAccess(ctx, "get_memory")
+	if s.memories == nil {
+		return nil, memoryOutput{}, errors.New("memories unavailable")
+	}
+	memory, err := s.memories.Get(ctx, input.ID)
+	if err != nil {
+		s.logError(ctx, "get_memory", err)
+		return nil, memoryOutput{}, safeToolError(err)
+	}
+	return nil, memoryOutput{Memory: memory}, nil
+}
+
+type saveMemoryInput struct {
+	Title          string `json:"title,omitempty" jsonschema:"Optional memory title."`
+	Content        string `json:"content,omitempty" jsonschema:"Free-text content. Required unless message_id is provided."`
+	MessageID      string `json:"message_id,omitempty" jsonschema:"Optional Contexta message UUID to persist as a memory. Loads text/transcription when content is empty."`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID to link."`
+	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID to link."`
+}
+
+func (s *server) saveMemory(ctx context.Context, _ *mcp.CallToolRequest, input saveMemoryInput) (*mcp.CallToolResult, memoryOutput, error) {
+	s.logAccess(ctx, "save_memory")
+	if s.memories == nil {
+		return nil, memoryOutput{}, errors.New("memories unavailable")
+	}
+	memory, err := s.memories.Create(ctx, memories.CreateParams{
+		Title: input.Title, Content: input.Content, MessageID: input.MessageID,
+		ConversationID: input.ConversationID, ContactID: input.ContactID,
+	})
+	if err != nil {
+		s.logError(ctx, "save_memory", err)
+		return nil, memoryOutput{}, safeToolError(err)
+	}
+	return nil, memoryOutput{Memory: memory}, nil
+}
+
+type updateMemoryInput struct {
+	ID             string  `json:"id" jsonschema:"Required Contexta memory ID."`
+	Title          *string `json:"title,omitempty" jsonschema:"New title."`
+	Content        *string `json:"content,omitempty" jsonschema:"New content. Re-embeds when changed."`
+	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
+	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
+}
+
+func (s *server) updateMemory(ctx context.Context, _ *mcp.CallToolRequest, input updateMemoryInput) (*mcp.CallToolResult, memoryOutput, error) {
+	s.logAccess(ctx, "update_memory")
+	if s.memories == nil {
+		return nil, memoryOutput{}, errors.New("memories unavailable")
+	}
+	memory, err := s.memories.Update(ctx, input.ID, memories.UpdateParams{
+		Title: input.Title, Content: input.Content,
+		ConversationID: input.ConversationID, ContactID: input.ContactID,
+	})
+	if err != nil {
+		s.logError(ctx, "update_memory", err)
+		return nil, memoryOutput{}, safeToolError(err)
+	}
+	return nil, memoryOutput{Memory: memory}, nil
+}
+
+type deleteMemoryInput struct {
+	ID string `json:"id" jsonschema:"Required Contexta memory ID."`
+}
+
+type deleteMemoryOutput struct {
+	Deleted bool `json:"deleted"`
+}
+
+func (s *server) deleteMemory(ctx context.Context, _ *mcp.CallToolRequest, input deleteMemoryInput) (*mcp.CallToolResult, deleteMemoryOutput, error) {
+	s.logAccess(ctx, "delete_memory")
+	if s.memories == nil {
+		return nil, deleteMemoryOutput{}, errors.New("memories unavailable")
+	}
+	if err := s.memories.Delete(ctx, input.ID); err != nil {
+		s.logError(ctx, "delete_memory", err)
+		return nil, deleteMemoryOutput{}, safeToolError(err)
+	}
+	return nil, deleteMemoryOutput{Deleted: true}, nil
+}
+
 func (s *server) logError(ctx context.Context, tool string, err error) {
 	s.logger.Error("mcp tool failed", "tool", tool, "error", err)
 	if recordErr := s.store.RecordActivity(ctx, activity.Record{Category: "mcp", Level: "error", Operation: tool, Outcome: "failed"}); recordErr != nil {
@@ -504,7 +653,8 @@ func safeToolError(err error) error {
 	if errors.Is(err, postgres.ErrNotFound) {
 		return errors.New("not found")
 	}
-	if errors.Is(err, postgres.ErrInvalidArgument) || errors.Is(err, pagination.ErrInvalidCursor) {
+	if errors.Is(err, postgres.ErrInvalidArgument) || errors.Is(err, pagination.ErrInvalidCursor) ||
+		errors.Is(err, memories.ErrInvalidContent) || errors.Is(err, memories.ErrEmbedderUnavailable) {
 		return errors.New("invalid argument")
 	}
 	return errors.New("query failed")

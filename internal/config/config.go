@@ -23,6 +23,13 @@ type Config struct {
 	MCPEnabled      bool
 	UAZAPI          UAZAPI
 	Transcription   Transcription
+	OpenRouter      OpenRouter
+}
+
+type OpenRouter struct {
+	APIKey         string
+	BaseURL        string
+	EmbeddingModel string
 }
 
 type UAZAPI struct {
@@ -78,6 +85,11 @@ func Load() (Config, error) {
 			APIKey:   os.Getenv("GROQ_API_KEY"),
 			Model:    stringEnv("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo"),
 			Language: stringEnv("GROQ_TRANSCRIPTION_LANGUAGE", "pt"),
+		},
+		OpenRouter: OpenRouter{
+			APIKey:         os.Getenv("OPENROUTER_API_KEY"),
+			BaseURL:        strings.TrimRight(stringEnv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), "/"),
+			EmbeddingModel: stringEnv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
 		},
 	}
 	transcriptionEnabled, err := boolEnv("TRANSCRIPTION_ENABLED", false)
