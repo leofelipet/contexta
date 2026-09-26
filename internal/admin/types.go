@@ -3,13 +3,41 @@ package admin
 import "time"
 
 type Dashboard struct {
-	Contacts      int64      `json:"contacts"`
-	Conversations int64      `json:"conversations"`
-	Messages      int64      `json:"messages"`
-	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
-	LastWebhookAt *time.Time `json:"last_webhook_at,omitempty"`
-	UAZAPIStatus  string     `json:"uazapi_status"`
-	Version       string     `json:"version"`
+	Contacts              int64             `json:"contacts"`
+	Conversations         int64             `json:"conversations"`
+	Messages              int64             `json:"messages"`
+	MessagesInbound       int64             `json:"messages_inbound"`
+	MessagesOutbound      int64             `json:"messages_outbound"`
+	MessagesLast7D        int64             `json:"messages_last_7d"`
+	MessagesLast30D       int64             `json:"messages_last_30d"`
+	Groups                int64             `json:"groups"`
+	Directs               int64             `json:"directs"`
+	ActiveConversations7D int64             `json:"active_conversations_7d"`
+	LastMessageAt         *time.Time        `json:"last_message_at,omitempty"`
+	LastWebhookAt         *time.Time        `json:"last_webhook_at,omitempty"`
+	UAZAPIStatus          string            `json:"uazapi_status"`
+	Version               string            `json:"version"`
+	Traffic               []DailyTraffic    `json:"traffic"`
+	MessageTypes          []NamedCount      `json:"message_types"`
+	TopConversations      []TopConversation `json:"top_conversations"`
+}
+
+type DailyTraffic struct {
+	Date     string `json:"date"`
+	Inbound  int64  `json:"inbound"`
+	Outbound int64  `json:"outbound"`
+}
+
+type NamedCount struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
+type TopConversation struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Type         string `json:"type"`
+	MessageCount int64  `json:"message_count"`
 }
 
 type MCPStatus struct {
