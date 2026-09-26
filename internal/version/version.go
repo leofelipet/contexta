@@ -1,4 +1,4 @@
 package version
 
 // Version is the current Contexta product version (semver).
-const Version = "1.6.2"
+const Version = "1.7.0"

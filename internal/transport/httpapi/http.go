@@ -41,6 +41,7 @@ type Store interface {
 	ListStaleConversations(context.Context, conversations.StaleParams) (conversations.StalePage, error)
 	GetConversation(context.Context, string) (conversations.Conversation, error)
 	DeleteConversation(context.Context, string) (conversations.DeleteResult, error)
+	DeleteConversations(context.Context, []string) (conversations.BulkDeleteResult, error)
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
 	ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error)
 	AcknowledgeMessages(context.Context, string, []string) (int, error)
@@ -109,6 +110,7 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/contacts/{id}", handler.getContact)
 	api.HandleFunc("GET /api/v1/conversations", handler.listConversations)
 	api.HandleFunc("GET /api/v1/conversations/stale", handler.listStaleConversations)
+	api.HandleFunc("POST /api/v1/conversations/bulk-delete", handler.bulkDeleteConversations)
 	api.HandleFunc("GET /api/v1/conversations/{id}", handler.getConversation)
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", handler.deleteConversation)
 	api.HandleFunc("GET /api/v1/conversations/{id}/messages", handler.conversationMessages)
@@ -244,6 +246,7 @@ func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := h.store.ListConversations(r.Context(), conversations.ListParams{
 		Query: r.URL.Query().Get("query"), ContactID: r.URL.Query().Get("contact_id"),
+		Type: r.URL.Query().Get("type"),
 		From: from, To: to, Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
 	})
 	if err != nil {
@@ -286,6 +289,30 @@ func (h *handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
 	h.recordActivity(r.Context(), activity.Record{
 		Category: "admin", Level: "info", Operation: "conversation_deleted", Outcome: "success",
 		EntityType: "conversation", EntityID: id,
+	})
+	writeJSON(w, http.StatusOK, result)
+}
+
+type bulkDeleteConversationsRequest struct {
+	IDs []string `json:"ids"`
+}
+
+func (h *handler) bulkDeleteConversations(w http.ResponseWriter, r *http.Request) {
+	var request bulkDeleteConversationsRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	result, err := h.store.DeleteConversations(r.Context(), request.IDs)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "conversations_bulk_deleted", Outcome: "success",
+		EntityType: "conversation",
 	})
 	writeJSON(w, http.StatusOK, result)
 }

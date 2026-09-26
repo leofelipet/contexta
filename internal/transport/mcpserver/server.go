@@ -181,6 +181,7 @@ func (s *server) acknowledgeMessages(ctx context.Context, _ *mcp.CallToolRequest
 type findConversationsInput struct {
 	Query     string `json:"query,omitempty" jsonschema:"Text to match against conversation title or provider ID."`
 	ContactID string `json:"contact_id,omitempty" jsonschema:"Contexta contact ID."`
+	Type      string `json:"type,omitempty" jsonschema:"Conversation type filter: group or direct."`
 	From      string `json:"from,omitempty" jsonschema:"Inclusive RFC3339 timestamp or YYYY-MM-DD date."`
 	To        string `json:"to,omitempty" jsonschema:"Exclusive RFC3339 timestamp or inclusive YYYY-MM-DD date."`
 	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum number of conversations, up to 100."`
@@ -199,7 +200,7 @@ func (s *server) findConversations(ctx context.Context, _ *mcp.CallToolRequest, 
 		return nil, conversationsOutput{}, err
 	}
 	page, err := s.store.ListConversations(ctx, conversations.ListParams{
-		Query: input.Query, ContactID: input.ContactID, From: from, To: to,
+		Query: input.Query, ContactID: input.ContactID, Type: input.Type, From: from, To: to,
 		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {

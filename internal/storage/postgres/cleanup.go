@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/leofelipet/contexta/internal/conversations"
@@ -184,4 +185,61 @@ func (s *Store) DeleteConversation(ctx context.Context, id string) (conversation
 		return conversations.DeleteResult{}, fmt.Errorf("commit delete conversation: %w", err)
 	}
 	return conversations.DeleteResult{Deleted: true, MessageCount: messageCount}, nil
+}
+
+func (s *Store) DeleteConversations(ctx context.Context, ids []string) (conversations.BulkDeleteResult, error) {
+	cleaned := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !isUUID(id) {
+			return conversations.BulkDeleteResult{}, ErrInvalidArgument
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+	if len(cleaned) == 0 {
+		return conversations.BulkDeleteResult{}, ErrInvalidArgument
+	}
+	if len(cleaned) > 100 {
+		return conversations.BulkDeleteResult{}, ErrInvalidArgument
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return conversations.BulkDeleteResult{}, fmt.Errorf("begin bulk delete conversations: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var messageCount int64
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*)::bigint FROM messages WHERE conversation_id = ANY($1::uuid[])`, cleaned,
+	).Scan(&messageCount); err != nil {
+		return conversations.BulkDeleteResult{}, fmt.Errorf("count bulk conversation messages: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM conversations WHERE id = ANY($1::uuid[])`, cleaned)
+	if err != nil {
+		return conversations.BulkDeleteResult{}, fmt.Errorf("bulk delete conversations: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM denylist_entries
+		WHERE target_type = 'conversation' AND target_id = ANY($1::uuid[])`, cleaned); err != nil {
+		return conversations.BulkDeleteResult{}, fmt.Errorf("cleanup denylist entries: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return conversations.BulkDeleteResult{}, fmt.Errorf("commit bulk delete conversations: %w", err)
+	}
+	return conversations.BulkDeleteResult{
+		DeletedCount: int(tag.RowsAffected()),
+		MessageCount: messageCount,
+	}, nil
 }

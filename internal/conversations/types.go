@@ -25,6 +25,7 @@ type Preview struct {
 type ListParams struct {
 	Query     string
 	ContactID string
+	Type      string
 	From      *time.Time
 	To        *time.Time
 	Limit     int
@@ -60,6 +61,11 @@ type StalePage struct {
 }
 
 type DeleteResult struct {
-	Deleted       bool  `json:"deleted"`
-	MessageCount  int64 `json:"message_count"`
+	Deleted      bool  `json:"deleted"`
+	MessageCount int64 `json:"message_count"`
+}
+
+type BulkDeleteResult struct {
+	DeletedCount int   `json:"deleted_count"`
+	MessageCount int64 `json:"message_count"`
 }

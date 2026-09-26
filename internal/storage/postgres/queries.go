@@ -119,6 +119,9 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 	if params.ContactID != "" && !isUUID(params.ContactID) {
 		return conversations.Page{}, ErrInvalidArgument
 	}
+	if params.Type != "" && params.Type != "group" && params.Type != "direct" {
+		return conversations.Page{}, ErrInvalidArgument
+	}
 	if params.Cursor != "" && (cursor.Time.IsZero() || !isUUID(cursor.ID)) {
 		return conversations.Page{}, pagination.ErrInvalidCursor
 	}
@@ -138,11 +141,12 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 		) lm ON true
 		WHERE ($1 = '' OR COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), '') ILIKE '%' || $1 || '%')
 		  AND ($2::uuid IS NULL OR c.contact_id = $2)
-		  AND ($3::timestamptz IS NULL OR c.last_message_at >= $3)
-		  AND ($4::timestamptz IS NULL OR c.last_message_at < $4)
-		  AND ($5::timestamptz IS NULL OR (COALESCE(c.last_message_at, c.created_at), c.id) < ($5, $6::uuid))
+		  AND ($3 = '' OR c.type = $3)
+		  AND ($4::timestamptz IS NULL OR c.last_message_at >= $4)
+		  AND ($5::timestamptz IS NULL OR c.last_message_at < $5)
+		  AND ($6::timestamptz IS NULL OR (COALESCE(c.last_message_at, c.created_at), c.id) < ($6, $7::uuid))
 		ORDER BY sort_time DESC, c.id DESC
-		LIMIT $7`, params.Query, nullableUUID(params.ContactID), params.From, params.To,
+		LIMIT $8`, params.Query, nullableUUID(params.ContactID), params.Type, params.From, params.To,
 		nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
 	if err != nil {
 		return conversations.Page{}, fmt.Errorf("list conversations: %w", err)
