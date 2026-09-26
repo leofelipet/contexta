@@ -50,6 +50,22 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 	query := strings.TrimSpace(params.Query)
 	company := strings.TrimSpace(params.Company)
 
+	var queryID any
+	textQuery := query
+	openOnly := params.OpenOnly
+	if strings.HasPrefix(query, "#") {
+		idPart := strings.TrimSpace(strings.TrimPrefix(query, "#"))
+		if isTaskID(idPart) {
+			parsed, err := parseTaskID(idPart)
+			if err != nil {
+				return tasks.Page{}, ErrInvalidArgument
+			}
+			queryID = parsed
+			textQuery = ""
+			openOnly = false // exact ID lookup should find closed tasks too
+		}
+	}
+
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+taskSelectCols+taskJoins+`
 		WHERE ($1::timestamptz IS NULL OR (t.created_at, t.id) < ($1, $2::bigint))
@@ -57,20 +73,24 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		  AND ($4 = '' OR t.company ILIKE '%' || $4 || '%')
 		  AND ($5::uuid IS NULL OR t.contact_id = $5::uuid)
 		  AND ($6::uuid IS NULL OR t.conversation_id = $6::uuid)
-		  AND ($7 = '' OR t.title ILIKE '%' || $7 || '%' OR t.description ILIKE '%' || $7 || '%')
+		  AND ($7::bigint IS NULL OR t.id = $7::bigint)
+		  AND ($8 = '' OR t.title ILIKE '%' || $8 || '%' OR t.description ILIKE '%' || $8 || '%' OR t.id::text = $8)
 		  AND (
-		    NOT $8 OR (
+		    NOT $9 OR (
 		      t.due_at IS NOT NULL
 		      AND t.due_at < now()
 		      AND t.status IN ('pending', 'in_progress', 'blocked')
 		    )
 		  )
+		  AND (
+		    NOT $10 OR $3 <> '' OR t.status NOT IN ('done', 'cancelled')
+		  )
 		ORDER BY t.created_at DESC, t.id DESC
-		LIMIT $9`,
+		LIMIT $11`,
 		nullableTime(cursor.Time), nullableTaskID(cursor.ID),
 		params.Status, company,
 		nullableUUID(params.ContactID), nullableUUID(params.ConversationID),
-		query, params.Overdue, limit+1,
+		queryID, textQuery, params.Overdue, openOnly, limit+1,
 	)
 	if err != nil {
 		return tasks.Page{}, fmt.Errorf("list tasks: %w", err)

@@ -72,7 +72,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_denylist", "List conversations and contacts blocked from message ingestion."), s.listDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
-	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query, and overdue due dates."), s.listTasks)
+	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query (prefix with # for exact numeric ID), overdue, and open_only."), s.listTasks)
 	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its numeric Contexta task ID (1, 2, 3…), including linked memories."), s.getTask)
 	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
 	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id."), s.updateTask)
@@ -386,8 +386,9 @@ type listTasksInput struct {
 	Company        string `json:"company,omitempty" jsonschema:"Filter by company name substring."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
-	Query          string `json:"query,omitempty" jsonschema:"Search text matched against title and description."`
+	Query          string `json:"query,omitempty" jsonschema:"Search text matched against title and description. Prefix with # (e.g. #12) for exact numeric task ID."`
 	Overdue        bool   `json:"overdue,omitempty" jsonschema:"When true, only open tasks with due_at in the past."`
+	OpenOnly       bool   `json:"open_only,omitempty" jsonschema:"When true and status is omitted, hide done and cancelled tasks."`
 	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of tasks, up to 100."`
 	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
 }
@@ -402,7 +403,7 @@ func (s *server) listTasks(ctx context.Context, _ *mcp.CallToolRequest, input li
 	page, err := s.store.ListTasks(ctx, tasks.ListParams{
 		Status: input.Status, Company: input.Company, ContactID: input.ContactID,
 		ConversationID: input.ConversationID, Query: input.Query, Overdue: input.Overdue,
-		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+		OpenOnly: input.OpenOnly, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
 		s.logError(ctx, "list_tasks", err)

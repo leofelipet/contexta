@@ -70,6 +70,7 @@ type ListParams struct {
 	ConversationID string
 	Query          string
 	Overdue        bool
+	OpenOnly       bool // when true and Status empty, exclude done/cancelled
 	Limit          int
 	Cursor         string
 }

@@ -494,6 +494,7 @@ func (h *handler) listTasks(w http.ResponseWriter, r *http.Request) {
 		ConversationID: query.Get("conversation_id"),
 		Query:          query.Get("q"),
 		Overdue:        query.Get("overdue") == "1" || strings.EqualFold(query.Get("overdue"), "true"),
+		OpenOnly:       query.Get("open_only") == "1" || strings.EqualFold(query.Get("open_only"), "true"),
 		Limit:          parseLimit(r),
 		Cursor:         query.Get("cursor"),
 	})
