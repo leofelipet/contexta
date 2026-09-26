@@ -46,7 +46,7 @@ func (s *Store) ListUnreadMessages(ctx context.Context, params messages.UnreadPa
 	limit := normalizeLimit(params.Limit, 20)
 	query := fmt.Sprintf(`
 		SELECT m.id::text, m.provider_message_id, m.conversation_id::text,
-		       COALESCE(m.sender_contact_id::text, ''), COALESCE(c.name, ''), m.direction,
+		       COALESCE(m.sender_contact_id::text, ''), COALESCE(NULLIF(c.name, ''), NULLIF(c.push_name, ''), NULLIF(c.phone, ''), ''), m.direction,
 		       m.type, m.text, m.status, m.occurred_at, COALESCE(m.reply_to_message_id::text, ''),
 		       m.transcription_status, m.transcription_text, m.transcription_language,
 		       m.transcription_model, m.transcribed_at, receipt.read_at, m.created_at
