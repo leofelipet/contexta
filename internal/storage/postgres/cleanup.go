@@ -9,6 +9,8 @@ import (
 	"github.com/leofelipet/contexta/internal/pagination"
 )
 
+const blockedCleanupLimit = 200
+
 func (s *Store) ListStaleConversations(ctx context.Context, params conversations.StaleParams) (conversations.StalePage, error) {
 	days := params.Days
 	if days <= 0 {
@@ -26,52 +28,125 @@ func (s *Store) ListStaleConversations(ctx context.Context, params conversations
 		return conversations.StalePage{}, pagination.ErrInvalidCursor
 	}
 
-	cutoff := time.Now().UTC().AddDate(0, 0, -days)
-	rows, err := s.pool.Query(ctx, `
-		SELECT c.id::text, c.type,
-		       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
-		       c.last_message_at, c.created_at,
-		       (SELECT count(*)::bigint FROM messages m WHERE m.conversation_id = c.id) AS message_count,
-		       COALESCE(c.last_message_at, c.created_at) AS activity_at
-		FROM conversations c
-		LEFT JOIN contacts cc ON cc.id = c.contact_id
-		WHERE COALESCE(c.last_message_at, c.created_at) < $1
-		  AND ($2::timestamptz IS NULL OR (COALESCE(c.last_message_at, c.created_at), c.id) < ($2, $3::uuid))
-		ORDER BY activity_at ASC, c.id ASC
-		LIMIT $4`, cutoff, nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
-	if err != nil {
-		return conversations.StalePage{}, fmt.Errorf("list stale conversations: %w", err)
-	}
-	defer rows.Close()
-
 	now := time.Now().UTC()
-	items := make([]conversations.StaleConversation, 0, limit+1)
-	for rows.Next() {
-		var item conversations.StaleConversation
-		var activityAt time.Time
-		if err := rows.Scan(&item.ID, &item.Type, &item.Title, &item.LastMessageAt, &item.CreatedAt, &item.MessageCount, &activityAt); err != nil {
-			return conversations.StalePage{}, fmt.Errorf("scan stale conversation: %w", err)
+	cutoff := now.AddDate(0, 0, -days)
+	page := conversations.StalePage{Days: days, Conversations: make([]conversations.StaleConversation, 0, limit)}
+
+	if params.Cursor == "" {
+		blocked, err := s.queryCleanupConversations(ctx, cleanupQuery{
+			blockedOnly: true,
+			limit:       blockedCleanupLimit,
+			now:         now,
+		})
+		if err != nil {
+			return conversations.StalePage{}, err
 		}
-		item.InactiveDays = int(now.Sub(activityAt).Hours() / 24)
-		if item.InactiveDays < days {
-			item.InactiveDays = days
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return conversations.StalePage{}, fmt.Errorf("iterate stale conversations: %w", err)
+		page.Conversations = append(page.Conversations, blocked...)
 	}
 
-	page := conversations.StalePage{Conversations: items[:min(limit, len(items))], Days: days}
-	if len(items) > limit {
-		last := items[limit-1]
+	stale, err := s.queryCleanupConversations(ctx, cleanupQuery{
+		blockedOnly: false,
+		cutoff:      &cutoff,
+		cursorTime:  nullableTime(cursor.Time),
+		cursorID:    nullableUUID(cursor.ID),
+		limit:       limit + 1,
+		now:         now,
+	})
+	if err != nil {
+		return conversations.StalePage{}, err
+	}
+	if len(stale) > limit {
+		last := stale[limit-1]
 		activity := last.CreatedAt
 		if last.LastMessageAt != nil {
 			activity = *last.LastMessageAt
 		}
-		page.NextCursor = pagination.Encode(pagination.Cursor{Kind: "stale_conversations", Time: activity, ID: last.ID})
+		page.NextCursor = pagination.Encode(pagination.Cursor{
+			Kind: "stale_conversations", Time: activity, ID: last.ID,
+		})
+		stale = stale[:limit]
 	}
+	page.Conversations = append(page.Conversations, stale...)
 	return page, nil
+}
+
+type cleanupQuery struct {
+	blockedOnly bool
+	cutoff      *time.Time
+	cursorTime  any
+	cursorID    any
+	limit       int
+	now         time.Time
+}
+
+func (s *Store) queryCleanupConversations(ctx context.Context, params cleanupQuery) ([]conversations.StaleConversation, error) {
+	if params.limit <= 0 {
+		return nil, nil
+	}
+
+	blockedPredicate := `
+		EXISTS (
+		  SELECT 1 FROM denylist_entries d
+		  WHERE (d.target_type = 'conversation' AND d.target_id = c.id)
+		     OR (d.target_type = 'contact' AND c.contact_id IS NOT NULL AND d.target_id = c.contact_id)
+		)`
+
+	var query string
+	var args []any
+	if params.blockedOnly {
+		query = `
+			SELECT c.id::text, c.type,
+			       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
+			       c.last_message_at, c.created_at,
+			       (SELECT count(*)::bigint FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+			       COALESCE(c.last_message_at, c.created_at) AS activity_at
+			FROM conversations c
+			LEFT JOIN contacts cc ON cc.id = c.contact_id
+			WHERE ` + blockedPredicate + `
+			ORDER BY activity_at ASC, c.id ASC
+			LIMIT $1`
+		args = []any{params.limit}
+	} else {
+		query = `
+			SELECT c.id::text, c.type,
+			       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
+			       c.last_message_at, c.created_at,
+			       (SELECT count(*)::bigint FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+			       COALESCE(c.last_message_at, c.created_at) AS activity_at
+			FROM conversations c
+			LEFT JOIN contacts cc ON cc.id = c.contact_id
+			WHERE COALESCE(c.last_message_at, c.created_at) < $1
+			  AND NOT (` + blockedPredicate + `)
+			  AND ($2::timestamptz IS NULL OR (COALESCE(c.last_message_at, c.created_at), c.id) < ($2, $3::uuid))
+			ORDER BY activity_at ASC, c.id ASC
+			LIMIT $4`
+		args = []any{params.cutoff, params.cursorTime, params.cursorID, params.limit}
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list cleanup conversations: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]conversations.StaleConversation, 0, params.limit)
+	for rows.Next() {
+		var item conversations.StaleConversation
+		var activityAt time.Time
+		if err := rows.Scan(&item.ID, &item.Type, &item.Title, &item.LastMessageAt, &item.CreatedAt, &item.MessageCount, &activityAt); err != nil {
+			return nil, fmt.Errorf("scan cleanup conversation: %w", err)
+		}
+		item.Blocked = params.blockedOnly
+		item.InactiveDays = int(params.now.Sub(activityAt).Hours() / 24)
+		if item.InactiveDays < 0 {
+			item.InactiveDays = 0
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cleanup conversations: %w", err)
+	}
+	return items, nil
 }
 
 func (s *Store) DeleteConversation(ctx context.Context, id string) (conversations.DeleteResult, error) {

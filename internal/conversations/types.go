@@ -50,6 +50,7 @@ type StaleConversation struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	MessageCount  int64      `json:"message_count"`
 	InactiveDays  int        `json:"inactive_days"`
+	Blocked       bool       `json:"blocked"`
 }
 
 type StalePage struct {
