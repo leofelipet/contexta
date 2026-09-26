@@ -1,0 +1,34 @@
+---
+description: Convenção SemVer para dump de versão (contexta + contexta-web)
+alwaysApply: true
+---
+
+# Dump de versão (SemVer)
+
+Formato: `MAJOR.MINOR.PATCH` (ex.: `1.10.0`).
+
+Ao receber pedido de **dump** (ou dump + commit/push), bumpa a versão nos dois repos em sincronia:
+
+- **contexta**: [`internal/version/version.go`](internal/version/version.go)
+- **contexta-web**: [`package.json`](../contexta-web/package.json) (`version`)
+
+## Quando subir cada casa
+
+| Casa | Nome | Quando |
+|------|------|--------|
+| **1** MAJOR | Maior | **Somente** se o usuário pedir explicitamente para upar a major |
+| **2** MINOR | Intermediária | Nova feature (capacidade nova para o usuário/agente) |
+| **3** PATCH | Menor | Bug fix **ou** alteração em funcionalidade que já existe |
+
+## Exemplos
+
+- Status `blocked` + vínculo tarefa↔memória (feature nova) → `1.9.0` → `1.10.0` (minor)
+- Trocar UUID de task por ID sequencial (mudança em feature existente) → `1.10.0` → `1.10.1` (patch)
+- “dump major” / “upa a major” → `1.10.1` → `2.0.0`
+
+## Regras de ouro
+
+- Sem pedido explícito de major → **nunca** incrementar a casa 1
+- Em dúvida entre minor e patch: se não entrega capability nova, é **patch**
+- Dump sem mudanças de código: só alinhar a versão; não inventar feature no changelog
+- Mensagem de commit do dump: incluir `ship vX.Y.Z` (padrão do repo)
