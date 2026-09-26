@@ -13,6 +13,7 @@ import (
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -51,6 +52,19 @@ func (fakeStore) AddDenylistEntry(context.Context, denylist.AddParams) (denylist
 	return denylist.Entry{ID: "denylist-1", TargetType: denylist.TargetConversation}, nil
 }
 func (fakeStore) RemoveDenylistEntry(context.Context, string) error { return nil }
+func (fakeStore) ListTasks(context.Context, tasks.ListParams) (tasks.Page, error) {
+	return tasks.Page{}, nil
+}
+func (fakeStore) GetTask(context.Context, string) (tasks.Task, error) {
+	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Sample"}, nil
+}
+func (fakeStore) CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error) {
+	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Sample"}, nil
+}
+func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error) {
+	return tasks.Task{ID: "00000000-0000-0000-0000-000000000010", Title: "Updated"}, nil
+}
+func (fakeStore) DeleteTask(context.Context, string) error { return nil }
 
 type bearerTransport struct {
 	token string
@@ -91,13 +105,16 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 12 {
-		t.Fatalf("tools = %d, want 12", len(tools.Tools))
+	if len(tools.Tools) != 17 {
+		t.Fatalf("tools = %d, want 17", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages": true,
 		"add_to_denylist":      true,
 		"remove_from_denylist": true,
+		"create_task":          true,
+		"update_task":          true,
+		"delete_task":          true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {

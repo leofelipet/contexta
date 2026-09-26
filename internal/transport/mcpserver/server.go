@@ -15,6 +15,7 @@ import (
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/leofelipet/contexta/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,6 +32,11 @@ type Store interface {
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
 	RemoveDenylistEntry(context.Context, string) error
+	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
+	GetTask(context.Context, string) (tasks.Task, error)
+	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
+	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error)
+	DeleteTask(context.Context, string) error
 	RecordActivity(context.Context, activity.Record) error
 }
 
@@ -62,6 +68,11 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_denylist", "List conversations and contacts blocked from message ingestion."), s.listDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
+	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query, and overdue due dates."), s.listTasks)
+	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its Contexta task ID."), s.getTask)
+	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
+	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id."), s.updateTask)
+	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID."), s.deleteTask)
 }
 
 func localWriteTool(name, description string) *mcp.Tool {
@@ -355,6 +366,120 @@ func (s *server) removeFromDenylist(ctx context.Context, _ *mcp.CallToolRequest,
 		return nil, removeDenylistOutput{}, safeToolError(err)
 	}
 	return nil, removeDenylistOutput{Removed: true}, nil
+}
+
+type listTasksInput struct {
+	Status         string `json:"status,omitempty" jsonschema:"Task status: pending, in_progress, done, or cancelled."`
+	Company        string `json:"company,omitempty" jsonschema:"Filter by company name substring."`
+	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
+	Query          string `json:"query,omitempty" jsonschema:"Search text matched against title and description."`
+	Overdue        bool   `json:"overdue,omitempty" jsonschema:"When true, only open tasks with due_at in the past."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of tasks, up to 100."`
+	Cursor         string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+}
+
+type tasksOutput struct {
+	Tasks      []tasks.Task `json:"tasks"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+}
+
+func (s *server) listTasks(ctx context.Context, _ *mcp.CallToolRequest, input listTasksInput) (*mcp.CallToolResult, tasksOutput, error) {
+	s.logAccess(ctx, "list_tasks")
+	page, err := s.store.ListTasks(ctx, tasks.ListParams{
+		Status: input.Status, Company: input.Company, ContactID: input.ContactID,
+		ConversationID: input.ConversationID, Query: input.Query, Overdue: input.Overdue,
+		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+	})
+	if err != nil {
+		s.logError(ctx, "list_tasks", err)
+		return nil, tasksOutput{}, safeToolError(err)
+	}
+	return nil, tasksOutput{Tasks: page.Tasks, NextCursor: page.NextCursor}, nil
+}
+
+type taskOutput struct {
+	Task tasks.Task `json:"task"`
+}
+
+func (s *server) getTask(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, taskOutput, error) {
+	s.logAccess(ctx, "get_task")
+	task, err := s.store.GetTask(ctx, input.ID)
+	if err != nil {
+		s.logError(ctx, "get_task", err)
+		return nil, taskOutput{}, safeToolError(err)
+	}
+	return nil, taskOutput{Task: task}, nil
+}
+
+type createTaskInput struct {
+	Title          string `json:"title" jsonschema:"Required task title."`
+	Description    string `json:"description,omitempty" jsonschema:"Optional task description."`
+	Company        string `json:"company,omitempty" jsonschema:"Optional free-text company name."`
+	Status         string `json:"status,omitempty" jsonschema:"pending, in_progress, done, or cancelled. Defaults to pending."`
+	DueAt          string `json:"due_at,omitempty" jsonschema:"Optional due date as RFC3339 or YYYY-MM-DD."`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID to link."`
+	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID to link."`
+}
+
+func (s *server) createTask(ctx context.Context, _ *mcp.CallToolRequest, input createTaskInput) (*mcp.CallToolResult, taskOutput, error) {
+	s.logAccess(ctx, "create_task")
+	dueAt, err := parseDateTime(input.DueAt, false)
+	if err != nil {
+		return nil, taskOutput{}, errors.New("invalid due_at; expected RFC3339 or YYYY-MM-DD")
+	}
+	task, err := s.store.CreateTask(ctx, tasks.CreateParams{
+		Title: input.Title, Description: input.Description, Company: input.Company,
+		Status: input.Status, DueAt: dueAt,
+		ConversationID: input.ConversationID, ContactID: input.ContactID,
+	})
+	if err != nil {
+		s.logError(ctx, "create_task", err)
+		return nil, taskOutput{}, safeToolError(err)
+	}
+	return nil, taskOutput{Task: task}, nil
+}
+
+type updateTaskInput struct {
+	ID             string  `json:"id" jsonschema:"Required Contexta task ID."`
+	Title          *string `json:"title,omitempty" jsonschema:"New title."`
+	Description    *string `json:"description,omitempty" jsonschema:"New description."`
+	Company        *string `json:"company,omitempty" jsonschema:"New company name."`
+	Status         *string `json:"status,omitempty" jsonschema:"pending, in_progress, done, or cancelled."`
+	DueAt          *string `json:"due_at,omitempty" jsonschema:"New due date as RFC3339 or YYYY-MM-DD. Empty string clears it."`
+	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
+	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
+}
+
+func (s *server) updateTask(ctx context.Context, _ *mcp.CallToolRequest, input updateTaskInput) (*mcp.CallToolResult, taskOutput, error) {
+	s.logAccess(ctx, "update_task")
+	task, err := s.store.UpdateTask(ctx, input.ID, tasks.UpdateParams{
+		Title: input.Title, Description: input.Description, Company: input.Company,
+		Status: input.Status, DueAt: input.DueAt,
+		ConversationID: input.ConversationID, ContactID: input.ContactID,
+	})
+	if err != nil {
+		s.logError(ctx, "update_task", err)
+		return nil, taskOutput{}, safeToolError(err)
+	}
+	return nil, taskOutput{Task: task}, nil
+}
+
+type deleteTaskInput struct {
+	ID string `json:"id" jsonschema:"Required Contexta task ID."`
+}
+
+type deleteTaskOutput struct {
+	Deleted bool `json:"deleted"`
+}
+
+func (s *server) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, input deleteTaskInput) (*mcp.CallToolResult, deleteTaskOutput, error) {
+	s.logAccess(ctx, "delete_task")
+	if err := s.store.DeleteTask(ctx, input.ID); err != nil {
+		s.logError(ctx, "delete_task", err)
+		return nil, deleteTaskOutput{}, safeToolError(err)
+	}
+	return nil, deleteTaskOutput{Deleted: true}, nil
 }
 
 func (s *server) logError(ctx context.Context, tool string, err error) {

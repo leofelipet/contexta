@@ -24,6 +24,7 @@ import (
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
+	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/leofelipet/contexta/internal/version"
 )
 
@@ -52,6 +53,11 @@ type Store interface {
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
 	RemoveDenylistEntry(context.Context, string) error
+	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
+	GetTask(context.Context, string) (tasks.Task, error)
+	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
+	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error)
+	DeleteTask(context.Context, string) error
 	SystemOverview(context.Context) (admin.SystemOverview, error)
 }
 
@@ -116,6 +122,11 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/denylist", handler.listDenylist)
 	api.HandleFunc("POST /api/v1/denylist", handler.addDenylistEntry)
 	api.HandleFunc("DELETE /api/v1/denylist/{id}", handler.removeDenylistEntry)
+	api.HandleFunc("GET /api/v1/tasks", handler.listTasks)
+	api.HandleFunc("GET /api/v1/tasks/{id}", handler.getTask)
+	api.HandleFunc("POST /api/v1/tasks", handler.createTask)
+	api.HandleFunc("PATCH /api/v1/tasks/{id}", handler.updateTask)
+	api.HandleFunc("DELETE /api/v1/tasks/{id}", handler.deleteTask)
 	api.HandleFunc("GET /api/v1/integrations/uazapi", handler.uazapiStatus)
 	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
@@ -433,6 +444,132 @@ func (h *handler) removeDenylistEntry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"removed": true})
 }
 
+func (h *handler) listTasks(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	page, err := h.store.ListTasks(r.Context(), tasks.ListParams{
+		Status:         query.Get("status"),
+		Company:        query.Get("company"),
+		ContactID:      query.Get("contact_id"),
+		ConversationID: query.Get("conversation_id"),
+		Query:          query.Get("q"),
+		Overdue:        query.Get("overdue") == "1" || strings.EqualFold(query.Get("overdue"), "true"),
+		Limit:          parseLimit(r),
+		Cursor:         query.Get("cursor"),
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pageResponse[tasks.Task]{Data: page.Tasks, NextCursor: page.NextCursor})
+}
+
+func (h *handler) getTask(w http.ResponseWriter, r *http.Request) {
+	task, err := h.store.GetTask(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+type createTaskRequest struct {
+	Title          string  `json:"title"`
+	Description    string  `json:"description"`
+	Company        string  `json:"company"`
+	Status         string  `json:"status"`
+	DueAt          *string `json:"due_at"`
+	ConversationID string  `json:"conversation_id"`
+	ContactID      string  `json:"contact_id"`
+}
+
+func (h *handler) createTask(w http.ResponseWriter, r *http.Request) {
+	var request createTaskRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	dueAt, err := parseOptionalDueAt(request.DueAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid due_at; expected RFC3339 or YYYY-MM-DD")
+		return
+	}
+	task, err := h.store.CreateTask(r.Context(), tasks.CreateParams{
+		Title: request.Title, Description: request.Description, Company: request.Company,
+		Status: request.Status, DueAt: dueAt,
+		ConversationID: request.ConversationID, ContactID: request.ContactID,
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "task_created", Outcome: "success",
+		EntityType: "task", EntityID: task.ID,
+	})
+	writeJSON(w, http.StatusOK, task)
+}
+
+type updateTaskRequest struct {
+	Title          *string `json:"title"`
+	Description    *string `json:"description"`
+	Company        *string `json:"company"`
+	Status         *string `json:"status"`
+	DueAt          *string `json:"due_at"`
+	ConversationID *string `json:"conversation_id"`
+	ContactID      *string `json:"contact_id"`
+}
+
+func (h *handler) updateTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var request updateTaskRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	task, err := h.store.UpdateTask(r.Context(), id, tasks.UpdateParams{
+		Title: request.Title, Description: request.Description, Company: request.Company,
+		Status: request.Status, DueAt: request.DueAt,
+		ConversationID: request.ConversationID, ContactID: request.ContactID,
+	})
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "task_updated", Outcome: "success",
+		EntityType: "task", EntityID: task.ID,
+	})
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *handler) deleteTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.store.DeleteTask(r.Context(), id); err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	h.recordActivity(r.Context(), activity.Record{
+		Category: "admin", Level: "info", Operation: "task_deleted", Outcome: "success",
+		EntityType: "task", EntityID: id,
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func parseOptionalDueAt(value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	return parseDateTime(trimmed, false)
+}
+
 type uazapiStatusResponse struct {
 	Instance struct {
 		ID          string `json:"id"`
@@ -516,7 +653,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task"},
 		LastAccessAt: lastAccess,
 	})
 }
