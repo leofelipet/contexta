@@ -19,6 +19,7 @@ import (
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
+	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/ingestion"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
@@ -74,6 +75,7 @@ type UAZAPIClient interface {
 type Options struct {
 	Store              Store
 	Memories           *memories.Service
+	Email              *email.Service
 	Ingestion          *ingestion.Service
 	APIToken           string
 	WebhookSecret      string
@@ -94,6 +96,7 @@ func New(options Options) http.Handler {
 	handler := &handler{
 		store:              options.Store,
 		memories:           options.Memories,
+		email:              options.Email,
 		ingestion:          options.Ingestion,
 		webhookSecret:      options.WebhookSecret,
 		providerInstanceID: options.ProviderInstanceID,
@@ -144,6 +147,12 @@ func New(options Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/memories/{id}", handler.deleteMemory)
 	api.HandleFunc("GET /api/v1/integrations/uazapi", handler.uazapiStatus)
 	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
+	api.HandleFunc("GET /api/v1/email-accounts", handler.listEmailAccounts)
+	api.HandleFunc("POST /api/v1/email-accounts", handler.createEmailAccount)
+	api.HandleFunc("GET /api/v1/email-accounts/{id}", handler.getEmailAccount)
+	api.HandleFunc("PATCH /api/v1/email-accounts/{id}", handler.updateEmailAccount)
+	api.HandleFunc("DELETE /api/v1/email-accounts/{id}", handler.deleteEmailAccount)
+	api.HandleFunc("POST /api/v1/email-accounts/{id}/test", handler.testEmailAccount)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
 	api.HandleFunc("GET /api/v1/activity", handler.listActivity)
 	root.Handle("/api/v1/", auth.NewMiddleware(options.APIToken).Wrap(api))
@@ -154,6 +163,7 @@ func New(options Options) http.Handler {
 type handler struct {
 	store              Store
 	memories           *memories.Service
+	email              *email.Service
 	ingestion          *ingestion.Service
 	webhookSecret      string
 	providerInstanceID string
@@ -272,7 +282,7 @@ func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listStaleConversations(w http.ResponseWriter, r *http.Request) {
 	page, err := h.store.ListStaleConversations(r.Context(), conversations.StaleParams{
-		Days: parseIntDefault(r.URL.Query().Get("days"), 30),
+		Days:  parseIntDefault(r.URL.Query().Get("days"), 30),
 		Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
 	})
 	if err != nil {
@@ -927,9 +937,18 @@ func (h *handler) recordActivity(ctx context.Context, record activity.Record) {
 
 func (h *handler) handleStoreError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, postgres.ErrNotFound):
+	case errors.Is(err, postgres.ErrNotFound), errors.Is(err, email.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, postgres.ErrInvalidArgument), errors.Is(err, pagination.ErrInvalidCursor),
+	case errors.Is(err, email.ErrMessageNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, email.ErrDisabled):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, email.ErrProvider):
+		writeError(w, http.StatusBadGateway, err.Error())
+	case errors.Is(err, email.ErrMissingKey):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, postgres.ErrInvalidArgument), errors.Is(err, email.ErrInvalidArgument),
+		errors.Is(err, pagination.ErrInvalidCursor),
 		errors.Is(err, memories.ErrInvalidContent), errors.Is(err, memories.ErrEmbedderUnavailable),
 		strings.Contains(err.Error(), "direction must"):
 		writeError(w, http.StatusBadRequest, err.Error())

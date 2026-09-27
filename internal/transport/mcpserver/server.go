@@ -12,6 +12,7 @@ import (
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
+	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
@@ -46,11 +47,12 @@ type Store interface {
 type server struct {
 	store    Store
 	memories *memories.Service
+	email    *email.Service
 	logger   *slog.Logger
 }
 
-func New(store Store, memoriesService *memories.Service, token string, logger *slog.Logger) http.Handler {
-	implementation := &server{store: store, memories: memoriesService, logger: logger}
+func New(store Store, memoriesService *memories.Service, emailService *email.Service, token string, logger *slog.Logger) http.Handler {
+	implementation := &server{store: store, memories: memoriesService, email: emailService, logger: logger}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: version.Version}, nil)
 	implementation.addTools(mcpServer)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
@@ -85,6 +87,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically."), s.saveMemory)
 	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links. Changing content re-embeds the memory."), s.updateMemory)
 	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
+	s.addEmailTools(mcpServer)
 }
 
 func localWriteTool(name, description string) *mcp.Tool {

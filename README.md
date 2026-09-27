@@ -4,7 +4,7 @@ Personal WhatsApp data platform and authenticated MCP server. Contexta receives 
 
 The administrative Next.js interface lives in the separate [contexta-web](https://github.com/leofelipet/contexta-web) repository.
 
-Contexta does not contain an LLM, chatbot, response automation, or message-sending tool.
+Contexta does not contain an LLM, chatbot, response automation, or WhatsApp message-sending tool. Optional corporate email accounts (IMAP/SMTP) can be connected so MCP agents can read, organize, and send email.
 
 ## Requirements
 
@@ -62,6 +62,30 @@ The supported models are `whisper-large-v3-turbo` and `whisper-large-v3`. Failed
 
 Conversation names are reconciled from UAZAPI every six hours. Direct chats prefer the saved contact name, WhatsApp push name, and phone number in that order; internal `@lid` identifiers are never used as display titles.
 
+## Email accounts
+
+Contexta can connect IMAP/SMTP mailboxes. Mail is read live from the IMAP server and is not stored in PostgreSQL; only account settings are persisted. Passwords are encrypted at rest with AES-256-GCM using `EMAIL_CREDENTIALS_KEY`:
+
+```sh
+openssl rand -base64 32
+```
+
+Without the key, email endpoints respond `503` and existing accounts cannot be used. Losing or rotating the key makes stored passwords unreadable; re-enter each account password after changing it.
+
+Register an account through the REST API, then verify connectivity:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/email-accounts \
+  -H "Authorization: Bearer $API_BEARER_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"Work","address":"me@company.com","username":"me@company.com","password":"...",
+       "imap_host":"mail.company.com","imap_port":993,"smtp_host":"mail.company.com","smtp_port":465}'
+curl -X POST http://localhost:8080/api/v1/email-accounts/{id}/test -H "Authorization: Bearer $API_BEARER_TOKEN"
+```
+
+TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports use implicit TLS. `save_sent_copy` files sent mail in the Sent folder via IMAP; it defaults to `false` for Gmail and Microsoft 365, which already do this, and `true` elsewhere. Each IMAP/SMTP operation times out after 25 seconds.
+
+`get_email` never marks messages as read; agents call `mark_email_read` explicitly. `delete_email` moves mail to the Trash folder. When the message is already in Trash, or the account has no Trash folder, it permanently expunges only that message and refuses when the server lacks UIDPLUS.
+
 ## Endpoints
 
 Health checks:
@@ -93,6 +117,12 @@ GET /api/v1/messages/{id}/around
 GET /api/v1/dashboard
 GET /api/v1/integrations/uazapi
 POST /api/v1/integrations/uazapi/configure-webhook
+GET /api/v1/email-accounts
+POST /api/v1/email-accounts
+GET /api/v1/email-accounts/{id}
+PATCH /api/v1/email-accounts/{id}
+DELETE /api/v1/email-accounts/{id}
+POST /api/v1/email-accounts/{id}/test
 GET /api/v1/mcp/status
 GET /api/v1/activity
 ```
@@ -120,6 +150,20 @@ list_contacts
 get_contact
 ```
 
+Email tools, registered when the email service is available:
+
+```text
+list_email_accounts
+list_mailboxes
+search_emails
+get_email
+mark_email_read
+set_email_flags
+move_email
+delete_email
+send_email
+```
+
 Message read state is tracked independently for each agent `consumer_id`. Use `list_unread_messages` to fetch pending work without changing state, then call `acknowledge_messages` only after processing succeeds. `search_messages` accepts optional `consumer_id` and `read_state` (`all`, `read`, or `unread`) filters. Existing search and conversation tools always remain available for historical access.
 
 All existing messages start unread for a new consumer. Audio messages with an active transcription job are held out of the unread queue until transcription completes or permanently fails. Acknowledgement only writes local read receipts; it never modifies or sends WhatsApp messages.
@@ -138,7 +182,8 @@ Captured files still contain private conversation data. Keep capture mode disabl
 - UAZAPI credentials and application tokens only come from environment variables.
 - Groq API keys, UAZAPI media keys, signed media URLs, audio bytes, and transcript contents are never logged.
 - Downloaded audio is size-limited, kept in memory only for processing, and is not persisted by Contexta.
-- MCP message data is read-only. The only state-changing tool writes idempotent, per-agent local read receipts and cannot alter WhatsApp content.
+- MCP WhatsApp data is read-only. The only WhatsApp state-changing tool writes idempotent, per-agent local read receipts and cannot alter WhatsApp content.
+- Email passwords are encrypted at rest, never returned by the API or MCP, and never logged. `send_email` and `delete_email` are annotated as destructive so MCP clients can require confirmation.
 - Operational activity excludes message bodies, payloads, authentication headers, and secrets.
 
 Run checks with:

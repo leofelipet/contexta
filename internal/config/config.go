@@ -8,22 +8,25 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	emailcrypto "github.com/leofelipet/contexta/internal/email/crypto"
 )
 
 const minimumSecretLength = 32
 
 type Config struct {
-	Environment     string
-	DatabaseURL     string
-	HTTPHost        string
-	HTTPPort        int
-	ShutdownTimeout time.Duration
-	APIToken        string
-	MCPToken        string
-	MCPEnabled      bool
-	UAZAPI          UAZAPI
-	Transcription   Transcription
-	OpenRouter      OpenRouter
+	Environment         string
+	DatabaseURL         string
+	HTTPHost            string
+	HTTPPort            int
+	ShutdownTimeout     time.Duration
+	APIToken            string
+	MCPToken            string
+	MCPEnabled          bool
+	EmailCredentialsKey []byte
+	UAZAPI              UAZAPI
+	Transcription       Transcription
+	OpenRouter          OpenRouter
 }
 
 type OpenRouter struct {
@@ -97,6 +100,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Transcription.Enabled = transcriptionEnabled
+
+	if raw := os.Getenv("EMAIL_CREDENTIALS_KEY"); raw != "" {
+		key, err := parseEmailCredentialsKey(raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.EmailCredentialsKey = key
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -190,4 +201,12 @@ func boolEnv(key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func parseEmailCredentialsKey(encoded string) ([]byte, error) {
+	key, err := emailcrypto.ParseKey(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("EMAIL_CREDENTIALS_KEY: %w", err)
+	}
+	return key, nil
 }

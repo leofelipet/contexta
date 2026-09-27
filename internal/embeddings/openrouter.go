@@ -17,10 +17,10 @@ type Client interface {
 }
 
 type OpenRouter struct {
-	apiKey string
+	apiKey  string
 	baseURL string
-	model  string
-	http   *http.Client
+	model   string
+	http    *http.Client
 }
 
 func NewOpenRouter(apiKey, baseURL, model string) *OpenRouter {
@@ -43,9 +43,9 @@ func (c *OpenRouter) Model() string { return c.model }
 func (c *OpenRouter) Available() bool { return c != nil && c.apiKey != "" }
 
 type embedRequest struct {
-	Model      string   `json:"model"`
-	Input      any      `json:"input"`
-	Dimensions int      `json:"dimensions,omitempty"`
+	Model      string `json:"model"`
+	Input      any    `json:"input"`
+	Dimensions int    `json:"dimensions,omitempty"`
 }
 
 type embedResponse struct {

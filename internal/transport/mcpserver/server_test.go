@@ -12,6 +12,7 @@ import (
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
+	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/tasks"
@@ -109,7 +110,7 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memoriesService := memories.NewService(fakeMemoryStore{}, nil)
-	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, "test-token", logger))
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, nil, "test-token", logger))
 	defer httpServer.Close()
 
 	unauthorized, err := http.Get(httpServer.URL)
@@ -136,7 +137,7 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tools.Tools) != 25 {
-		t.Fatalf("tools = %d, want 25", len(tools.Tools))
+		t.Fatalf("tools = %d, want 25 (without email service)", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages":    true,
@@ -197,5 +198,78 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	})
 	if err != nil || result.IsError || result.StructuredContent == nil {
 		t.Fatalf("list_memories result = %#v, err = %v", result, err)
+	}
+}
+
+type fakeEmailStore struct{}
+
+func (fakeEmailStore) ListEmailAccounts(context.Context, email.ListParams) (email.Page, error) {
+	return email.Page{Accounts: []email.Account{{ID: "00000000-0000-0000-0000-0000000000aa", Name: "Work", Address: "work@example.com", Enabled: true}}}, nil
+}
+func (fakeEmailStore) GetEmailAccount(context.Context, string) (email.Account, error) {
+	return email.Account{}, email.ErrNotFound
+}
+func (fakeEmailStore) GetEmailAccountSecrets(context.Context, string) (email.AccountSecrets, []byte, error) {
+	return email.AccountSecrets{}, nil, email.ErrNotFound
+}
+func (fakeEmailStore) CreateEmailAccount(context.Context, email.CreateParams, []byte) (email.Account, error) {
+	return email.Account{}, email.ErrInvalidArgument
+}
+func (fakeEmailStore) UpdateEmailAccount(context.Context, string, email.UpdateParams, []byte) (email.Account, error) {
+	return email.Account{}, email.ErrNotFound
+}
+func (fakeEmailStore) DeleteEmailAccount(context.Context, string) error { return email.ErrNotFound }
+
+func TestMCPEmailToolsRegistered(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	memoriesService := memories.NewService(fakeMemoryStore{}, nil)
+	key := make([]byte, 32)
+	emailService := email.NewService(fakeEmailStore{}, key, nil, nil)
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, emailService, "test-token", logger))
+	defer httpServer.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:   httpServer.URL,
+		HTTPClient: &http.Client{Transport: bearerTransport{token: "test-token"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.Tools) != 34 {
+		t.Fatalf("tools = %d, want 34 with email", len(tools.Tools))
+	}
+	byName := map[string]*mcp.Tool{}
+	for _, tool := range tools.Tools {
+		byName[tool.Name] = tool
+	}
+	for _, name := range []string{"list_email_accounts", "list_mailboxes", "search_emails", "get_email", "mark_email_read", "send_email", "set_email_flags", "move_email", "delete_email"} {
+		tool := byName[name]
+		if tool == nil || tool.Annotations == nil {
+			t.Fatalf("missing email tool %s", name)
+		}
+		if !*tool.Annotations.OpenWorldHint && name != "list_email_accounts" {
+			t.Fatalf("%s should be open-world", name)
+		}
+	}
+	if !*byName["send_email"].Annotations.DestructiveHint || !*byName["delete_email"].Annotations.DestructiveHint {
+		t.Fatal("send/delete should be destructive")
+	}
+	if byName["list_email_accounts"].Annotations.OpenWorldHint != nil && *byName["list_email_accounts"].Annotations.OpenWorldHint {
+		t.Fatal("list_email_accounts should stay closed-world")
+	}
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "list_email_accounts", Arguments: map[string]any{"enabled_only": true},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("list_email_accounts result = %#v, err = %v", result, err)
 	}
 }
