@@ -37,8 +37,8 @@ type Store interface {
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
 	GetTask(context.Context, string) (tasks.Task, error)
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
-	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error)
-	DeleteTask(context.Context, string) error
+	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, tasks.MemoryCleanup, error)
+	DeleteTask(ctx context.Context, id string, deleteMemories bool) (tasks.DeleteResult, error)
 	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	RecordActivity(context.Context, activity.Record) error
@@ -77,8 +77,8 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query (prefix with # for exact numeric ID), overdue, and open_only."), s.listTasks)
 	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its numeric Contexta task ID (1, 2, 3…), including linked memories."), s.getTask)
 	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
-	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id."), s.updateTask)
-	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID."), s.deleteTask)
+	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id. When closing a task (done or cancelled), delete_memories=true permanently deletes memories linked only to this task; use it only when that context is no longer worth keeping."), s.updateTask)
+	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID. With delete_memories=true, also permanently deletes memories linked only to this task; memories linked to other tasks are kept."), s.deleteTask)
 	mcp.AddTool(mcpServer, localWriteTool("attach_memory_to_task", "Link an existing memory to a task. A task can have unlimited memories; the same memory may link to multiple tasks."), s.attachMemoryToTask)
 	mcp.AddTool(mcpServer, localWriteTool("detach_memory_from_task", "Remove the link between a task and a memory without deleting either."), s.detachMemoryFromTask)
 	mcp.AddTool(mcpServer, readOnlyTool("search_memories", "Semantic search over saved agent memories using embeddings. Prefer this for recall by meaning."), s.searchMemories)
@@ -470,37 +470,42 @@ type updateTaskInput struct {
 	DueAt          *string `json:"due_at,omitempty" jsonschema:"New due date as RFC3339 or YYYY-MM-DD. Empty string clears it."`
 	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
 	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
+	DeleteMemories bool    `json:"delete_memories,omitempty" jsonschema:"Only when the resulting status is done or cancelled: permanently delete memories linked only to this task. Memories linked to other tasks are kept. Defaults to false."`
 }
 
-func (s *server) updateTask(ctx context.Context, _ *mcp.CallToolRequest, input updateTaskInput) (*mcp.CallToolResult, taskOutput, error) {
+type updateTaskOutput struct {
+	Task tasks.Task `json:"task"`
+	tasks.MemoryCleanup
+}
+
+func (s *server) updateTask(ctx context.Context, _ *mcp.CallToolRequest, input updateTaskInput) (*mcp.CallToolResult, updateTaskOutput, error) {
 	s.logAccess(ctx, "update_task")
-	task, err := s.store.UpdateTask(ctx, input.ID, tasks.UpdateParams{
+	task, cleanup, err := s.store.UpdateTask(ctx, input.ID, tasks.UpdateParams{
 		Title: input.Title, Description: input.Description, Company: input.Company,
 		Status: input.Status, DueAt: input.DueAt,
 		ConversationID: input.ConversationID, ContactID: input.ContactID,
+		DeleteMemories: input.DeleteMemories,
 	})
 	if err != nil {
 		s.logError(ctx, "update_task", err)
-		return nil, taskOutput{}, safeToolError(err)
+		return nil, updateTaskOutput{}, safeToolError(err)
 	}
-	return nil, taskOutput{Task: task}, nil
+	return nil, updateTaskOutput{Task: task, MemoryCleanup: cleanup}, nil
 }
 
 type deleteTaskInput struct {
-	ID string `json:"id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
+	ID             string `json:"id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
+	DeleteMemories bool   `json:"delete_memories,omitempty" jsonschema:"Also permanently delete memories linked only to this task. Memories linked to other tasks are kept. Defaults to false."`
 }
 
-type deleteTaskOutput struct {
-	Deleted bool `json:"deleted"`
-}
-
-func (s *server) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, input deleteTaskInput) (*mcp.CallToolResult, deleteTaskOutput, error) {
+func (s *server) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, input deleteTaskInput) (*mcp.CallToolResult, tasks.DeleteResult, error) {
 	s.logAccess(ctx, "delete_task")
-	if err := s.store.DeleteTask(ctx, input.ID); err != nil {
+	result, err := s.store.DeleteTask(ctx, input.ID, input.DeleteMemories)
+	if err != nil {
 		s.logError(ctx, "delete_task", err)
-		return nil, deleteTaskOutput{}, safeToolError(err)
+		return nil, tasks.DeleteResult{}, safeToolError(err)
 	}
-	return nil, deleteTaskOutput{Deleted: true}, nil
+	return nil, result, nil
 }
 
 type attachMemoryToTaskInput struct {

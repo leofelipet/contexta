@@ -59,8 +59,8 @@ type Store interface {
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
 	GetTask(context.Context, string) (tasks.Task, error)
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
-	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error)
-	DeleteTask(context.Context, string) error
+	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, tasks.MemoryCleanup, error)
+	DeleteTask(ctx context.Context, id string, deleteMemories bool) (tasks.DeleteResult, error)
 	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	SystemOverview(context.Context) (admin.SystemOverview, error)
@@ -571,6 +571,7 @@ type updateTaskRequest struct {
 	DueAt          *string `json:"due_at"`
 	ConversationID *string `json:"conversation_id"`
 	ContactID      *string `json:"contact_id"`
+	DeleteMemories bool    `json:"delete_memories"`
 }
 
 func (h *handler) updateTask(w http.ResponseWriter, r *http.Request) {
@@ -582,10 +583,11 @@ func (h *handler) updateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	task, err := h.store.UpdateTask(r.Context(), id, tasks.UpdateParams{
+	task, _, err := h.store.UpdateTask(r.Context(), id, tasks.UpdateParams{
 		Title: request.Title, Description: request.Description, Company: request.Company,
 		Status: request.Status, DueAt: request.DueAt,
 		ConversationID: request.ConversationID, ContactID: request.ContactID,
+		DeleteMemories: request.DeleteMemories,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -600,7 +602,9 @@ func (h *handler) updateTask(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.store.DeleteTask(r.Context(), id); err != nil {
+	deleteMemories := r.URL.Query().Get("delete_memories") == "true"
+	result, err := h.store.DeleteTask(r.Context(), id, deleteMemories)
+	if err != nil {
 		h.handleStoreError(w, err)
 		return
 	}
@@ -608,7 +612,7 @@ func (h *handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 		Category: "admin", Level: "info", Operation: "task_deleted", Outcome: "success",
 		EntityType: "task", EntityID: id,
 	})
-	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	writeJSON(w, http.StatusOK, result)
 }
 
 type attachTaskMemoryRequest struct {

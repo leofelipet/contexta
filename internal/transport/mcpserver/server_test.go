@@ -63,10 +63,12 @@ func (fakeStore) GetTask(context.Context, string) (tasks.Task, error) {
 func (fakeStore) CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error) {
 	return tasks.Task{ID: "1", Title: "Sample"}, nil
 }
-func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, error) {
-	return tasks.Task{ID: "1", Title: "Updated"}, nil
+func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, tasks.MemoryCleanup, error) {
+	return tasks.Task{ID: "1", Title: "Updated"}, tasks.MemoryCleanup{}, nil
 }
-func (fakeStore) DeleteTask(context.Context, string) error { return nil }
+func (fakeStore) DeleteTask(context.Context, string, bool) (tasks.DeleteResult, error) {
+	return tasks.DeleteResult{Deleted: true}, nil
+}
 func (fakeStore) AttachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {
 	return tasks.Task{ID: taskID, Title: "Sample", Memories: []tasks.MemoryRef{{ID: "00000000-0000-0000-0000-000000000020", Title: "Note"}}}, nil
 }
@@ -198,6 +200,20 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	})
 	if err != nil || result.IsError || result.StructuredContent == nil {
 		t.Fatalf("list_memories result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "delete_task", Arguments: map[string]any{"id": "1", "delete_memories": true},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("delete_task result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "update_task", Arguments: map[string]any{"id": "1", "status": "done", "delete_memories": true},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("update_task result = %#v, err = %v", result, err)
 	}
 }
 

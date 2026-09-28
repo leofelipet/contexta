@@ -205,43 +205,44 @@ func (s *Store) CreateTask(ctx context.Context, params tasks.CreateParams) (task
 	return s.GetTask(ctx, id)
 }
 
-func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdateParams) (tasks.Task, error) {
+func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdateParams) (tasks.Task, tasks.MemoryCleanup, error) {
+	var cleanup tasks.MemoryCleanup
 	taskID, err := parseTaskID(id)
 	if err != nil {
-		return tasks.Task{}, err
+		return tasks.Task{}, cleanup, err
 	}
 
 	current, err := s.GetTask(ctx, id)
 	if err != nil {
-		return tasks.Task{}, err
+		return tasks.Task{}, cleanup, err
 	}
 
 	title := current.Title
 	if params.Title != nil {
 		title = strings.TrimSpace(*params.Title)
 		if title == "" || len(title) > 500 {
-			return tasks.Task{}, ErrInvalidArgument
+			return tasks.Task{}, cleanup, ErrInvalidArgument
 		}
 	}
 	description := current.Description
 	if params.Description != nil {
 		description = strings.TrimSpace(*params.Description)
 		if len(description) > 10000 {
-			return tasks.Task{}, ErrInvalidArgument
+			return tasks.Task{}, cleanup, ErrInvalidArgument
 		}
 	}
 	company := current.Company
 	if params.Company != nil {
 		company = strings.TrimSpace(*params.Company)
 		if len(company) > 200 {
-			return tasks.Task{}, ErrInvalidArgument
+			return tasks.Task{}, cleanup, ErrInvalidArgument
 		}
 	}
 	status := current.Status
 	if params.Status != nil {
 		status = strings.TrimSpace(*params.Status)
 		if !tasks.ValidStatus(status) {
-			return tasks.Task{}, ErrInvalidArgument
+			return tasks.Task{}, cleanup, ErrInvalidArgument
 		}
 	}
 
@@ -253,7 +254,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 		} else {
 			parsed, err := parseTaskDueAt(value)
 			if err != nil {
-				return tasks.Task{}, ErrInvalidArgument
+				return tasks.Task{}, cleanup, ErrInvalidArgument
 			}
 			dueAt = parsed
 		}
@@ -264,14 +265,14 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 		conversationID = strings.TrimSpace(*params.ConversationID)
 		if conversationID != "" {
 			if !isUUID(conversationID) {
-				return tasks.Task{}, ErrInvalidArgument
+				return tasks.Task{}, cleanup, ErrInvalidArgument
 			}
 			exists, err := s.entityExists(ctx, "conversations", conversationID)
 			if err != nil {
-				return tasks.Task{}, err
+				return tasks.Task{}, cleanup, err
 			}
 			if !exists {
-				return tasks.Task{}, ErrNotFound
+				return tasks.Task{}, cleanup, ErrNotFound
 			}
 		}
 	}
@@ -281,16 +282,20 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 		contactID = strings.TrimSpace(*params.ContactID)
 		if contactID != "" {
 			if !isUUID(contactID) {
-				return tasks.Task{}, ErrInvalidArgument
+				return tasks.Task{}, cleanup, ErrInvalidArgument
 			}
 			exists, err := s.entityExists(ctx, "contacts", contactID)
 			if err != nil {
-				return tasks.Task{}, err
+				return tasks.Task{}, cleanup, err
 			}
 			if !exists {
-				return tasks.Task{}, ErrNotFound
+				return tasks.Task{}, cleanup, ErrNotFound
 			}
 		}
+	}
+
+	if params.DeleteMemories && !tasks.IsClosed(status) {
+		return tasks.Task{}, cleanup, ErrInvalidArgument
 	}
 
 	if status == tasks.StatusDone && current.Status != tasks.StatusDone {
@@ -298,7 +303,13 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 		dueAt = &now
 	}
 
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return tasks.Task{}, cleanup, fmt.Errorf("begin update task: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET
 			title = $2,
 			description = $3,
@@ -313,27 +324,111 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 		nullableUUID(conversationID), nullableUUID(contactID),
 	)
 	if err != nil {
-		return tasks.Task{}, fmt.Errorf("update task: %w", err)
+		return tasks.Task{}, cleanup, fmt.Errorf("update task: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return tasks.Task{}, ErrNotFound
+		return tasks.Task{}, cleanup, ErrNotFound
 	}
-	return s.GetTask(ctx, id)
+	if params.DeleteMemories {
+		// Kept memories stay linked: the task still exists and they remain useful context.
+		cleanup, err = deleteExclusiveTaskMemories(ctx, tx, taskID)
+		if err != nil {
+			return tasks.Task{}, tasks.MemoryCleanup{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return tasks.Task{}, tasks.MemoryCleanup{}, fmt.Errorf("commit update task: %w", err)
+	}
+	task, err := s.GetTask(ctx, id)
+	return task, cleanup, err
 }
 
-func (s *Store) DeleteTask(ctx context.Context, id string) error {
+func (s *Store) DeleteTask(ctx context.Context, id string, deleteMemories bool) (tasks.DeleteResult, error) {
 	taskID, err := parseTaskID(id)
 	if err != nil {
-		return err
+		return tasks.DeleteResult{}, err
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, taskID)
+
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("delete task: %w", err)
+		return tasks.DeleteResult{}, fmt.Errorf("begin delete task: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var cleanup tasks.MemoryCleanup
+	if deleteMemories {
+		// Runs before the task delete so the links are still there to inspect.
+		cleanup, err = deleteExclusiveTaskMemories(ctx, tx, taskID)
+		if err != nil {
+			return tasks.DeleteResult{}, err
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, taskID)
+	if err != nil {
+		return tasks.DeleteResult{}, fmt.Errorf("delete task: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return tasks.DeleteResult{}, ErrNotFound
 	}
-	return nil
+	if err := tx.Commit(ctx); err != nil {
+		return tasks.DeleteResult{}, fmt.Errorf("commit delete task: %w", err)
+	}
+	return tasks.DeleteResult{Deleted: true, MemoryCleanup: cleanup}, nil
+}
+
+// deleteExclusiveTaskMemories deletes memories linked only to taskID and
+// reports the ones kept because another task also links them.
+func deleteExclusiveTaskMemories(ctx context.Context, tx pgx.Tx, taskID int64) (tasks.MemoryCleanup, error) {
+	// Lock the linked memories first so a concurrent attach to another task
+	// (whose FK check needs a share lock on the memory row) waits for us.
+	if _, err := tx.Exec(ctx, `
+		SELECT m.id
+		FROM memories m
+		JOIN task_memories tm ON tm.memory_id = m.id
+		WHERE tm.task_id = $1
+		ORDER BY m.id
+		FOR UPDATE OF m`, taskID); err != nil {
+		return tasks.MemoryCleanup{}, fmt.Errorf("lock task memories: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT tm.memory_id::text,
+		       EXISTS (
+		           SELECT 1 FROM task_memories other
+		           WHERE other.memory_id = tm.memory_id AND other.task_id <> tm.task_id
+		       )
+		FROM task_memories tm
+		WHERE tm.task_id = $1
+		ORDER BY tm.created_at DESC, tm.memory_id DESC`, taskID)
+	if err != nil {
+		return tasks.MemoryCleanup{}, fmt.Errorf("list task memory links: %w", err)
+	}
+	var cleanup tasks.MemoryCleanup
+	for rows.Next() {
+		var memoryID string
+		var shared bool
+		if err := rows.Scan(&memoryID, &shared); err != nil {
+			rows.Close()
+			return tasks.MemoryCleanup{}, err
+		}
+		if shared {
+			cleanup.KeptMemoryIDs = append(cleanup.KeptMemoryIDs, memoryID)
+		} else {
+			cleanup.DeletedMemoryIDs = append(cleanup.DeletedMemoryIDs, memoryID)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return tasks.MemoryCleanup{}, fmt.Errorf("iterate task memory links: %w", err)
+	}
+
+	if len(cleanup.DeletedMemoryIDs) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM memories WHERE id = ANY($1::uuid[])`, cleanup.DeletedMemoryIDs); err != nil {
+			return tasks.MemoryCleanup{}, fmt.Errorf("delete task memories: %w", err)
+		}
+	}
+	return cleanup, nil
 }
 
 func (s *Store) ListTaskMemories(ctx context.Context, taskID string) ([]tasks.MemoryRef, error) {

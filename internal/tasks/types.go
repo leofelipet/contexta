@@ -10,6 +10,11 @@ const (
 	StatusCancelled  = "cancelled"
 )
 
+// IsClosed reports whether a status marks the task as finished.
+func IsClosed(status string) bool {
+	return status == StatusDone || status == StatusCancelled
+}
+
 func ValidStatus(value string) bool {
 	switch value {
 	case StatusPending, StatusInProgress, StatusBlocked, StatusDone, StatusCancelled:
@@ -61,6 +66,21 @@ type UpdateParams struct {
 	DueAt          *string
 	ConversationID *string
 	ContactID      *string
+	// DeleteMemories removes memories linked only to this task. Requires the
+	// resulting status to be done or cancelled.
+	DeleteMemories bool
+}
+
+// MemoryCleanup reports which linked memories were deleted along with a task
+// and which were kept because other tasks still reference them.
+type MemoryCleanup struct {
+	DeletedMemoryIDs []string `json:"deleted_memory_ids,omitempty"`
+	KeptMemoryIDs    []string `json:"kept_memory_ids,omitempty"`
+}
+
+type DeleteResult struct {
+	Deleted bool `json:"deleted"`
+	MemoryCleanup
 }
 
 type ListParams struct {
