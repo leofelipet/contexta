@@ -89,12 +89,17 @@ func TestIngestionAndQueries(t *testing.T) {
 	updatedChats, err := store.SyncChats(ctx, instance, []chats.Profile{{
 		JID: chat, Name: "Alice sincronizada " + suffix, PushName: "Alice", Phone: "5511999999999",
 	}})
-	if err != nil || updatedChats != 1 {
+	// A direct chat updates both the conversation title and its contact.
+	if err != nil || updatedChats != 2 {
 		t.Fatalf("chat sync updated=%d, err=%v", updatedChats, err)
 	}
 	syncedConversation, err := store.GetConversation(ctx, conversationID)
 	if err != nil || syncedConversation.Title != "Alice sincronizada "+suffix {
 		t.Fatalf("synced conversation = %#v, err=%v", syncedConversation, err)
+	}
+	syncedContact, err := store.GetContact(ctx, syncedConversation.ContactID)
+	if err != nil || syncedContact.Name != "Alice sincronizada "+suffix || syncedContact.PushName != "Alice" {
+		t.Fatalf("synced contact = %#v, err=%v", syncedContact, err)
 	}
 	allMessages, err := store.SearchMessages(ctx, messages.SearchParams{ConversationID: conversationID, Limit: 10})
 	if err != nil {
