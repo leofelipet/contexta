@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	_ "time/tzdata" // schedules evaluate cron in IANA timezones; the runtime image ships no zoneinfo
 
 	"github.com/leofelipet/contexta/internal/config"
 	"github.com/leofelipet/contexta/internal/email"
@@ -19,6 +20,7 @@ import (
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/providers/transcription/groq"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/transcription"
 	"github.com/leofelipet/contexta/internal/transport/httpapi"
@@ -94,6 +96,9 @@ func serve(ctx context.Context, cfg config.Config) error {
 		worker := transcription.NewService(store, uazapiClient, transcriber, cfg.Transcription.Language, logger)
 		go worker.Run(ctx)
 	}
+	if cfg.SchedulerEnabled {
+		go schedules.NewWorker(store, logger).Run(ctx)
+	}
 	apiHandler := httpapi.New(httpapi.Options{
 		Store: store, Memories: memoriesService, Email: emailService, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
@@ -118,7 +123,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("server started", "address", cfg.HTTPAddress(), "environment", cfg.Environment, "mcp_enabled", cfg.MCPEnabled)
+		logger.Info("server started", "address", cfg.HTTPAddress(), "environment", cfg.Environment, "mcp_enabled", cfg.MCPEnabled, "scheduler_enabled", cfg.SchedulerEnabled)
 		serverErrors <- server.ListenAndServe()
 	}()
 

@@ -9,6 +9,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/pressly/goose/v3 v3.26.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/wneessen/go-mail v0.8.1
 )
 

@@ -25,6 +25,7 @@ import (
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/leofelipet/contexta/internal/version"
@@ -63,6 +64,11 @@ type Store interface {
 	DeleteTask(ctx context.Context, id string, deleteMemories bool) (tasks.DeleteResult, error)
 	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
+	ListTaskSchedules(context.Context, schedules.ListParams) (schedules.Page, error)
+	GetTaskSchedule(context.Context, string) (schedules.Schedule, error)
+	CreateTaskSchedule(context.Context, schedules.CreateParams) (schedules.Schedule, error)
+	UpdateTaskSchedule(context.Context, string, schedules.UpdateParams) (schedules.Schedule, error)
+	DeleteTaskSchedule(context.Context, string) error
 	SystemOverview(context.Context) (admin.SystemOverview, error)
 }
 
@@ -139,6 +145,11 @@ func New(options Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/tasks/{id}", handler.deleteTask)
 	api.HandleFunc("POST /api/v1/tasks/{id}/memories", handler.attachTaskMemory)
 	api.HandleFunc("DELETE /api/v1/tasks/{id}/memories/{memory_id}", handler.detachTaskMemory)
+	api.HandleFunc("GET /api/v1/task-schedules", handler.listTaskSchedules)
+	api.HandleFunc("POST /api/v1/task-schedules", handler.createTaskSchedule)
+	api.HandleFunc("GET /api/v1/task-schedules/{id}", handler.getTaskSchedule)
+	api.HandleFunc("PATCH /api/v1/task-schedules/{id}", handler.updateTaskSchedule)
+	api.HandleFunc("DELETE /api/v1/task-schedules/{id}", handler.deleteTaskSchedule)
 	api.HandleFunc("GET /api/v1/memories", handler.listMemories)
 	api.HandleFunc("POST /api/v1/memories/search", handler.searchMemories)
 	api.HandleFunc("GET /api/v1/memories/{id}", handler.getMemory)
@@ -502,6 +513,7 @@ func (h *handler) listTasks(w http.ResponseWriter, r *http.Request) {
 		Company:        query.Get("company"),
 		ContactID:      query.Get("contact_id"),
 		ConversationID: query.Get("conversation_id"),
+		ScheduleID:     query.Get("schedule_id"),
 		Query:          query.Get("q"),
 		Overdue:        query.Get("overdue") == "1" || strings.EqualFold(query.Get("overdue"), "true"),
 		OpenOnly:       query.Get("open_only") == "1" || strings.EqualFold(query.Get("open_only"), "true"),
@@ -901,7 +913,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "attach_memory_to_task", "detach_memory_from_task", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "attach_memory_to_task", "detach_memory_from_task", "list_task_schedules", "get_task_schedule", "create_task_schedule", "update_task_schedule", "delete_task_schedule", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
 		LastAccessAt: lastAccess,
 	})
 }

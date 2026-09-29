@@ -20,6 +20,7 @@ const taskSelectCols = `
 	         NULLIF(cc.phone, ''), NULLIF(c.provider_conversation_id, ''), ''),
 	COALESCE(NULLIF(ct.name, ''), NULLIF(ct.push_name, ''), NULLIF(ct.phone, ''),
 	         NULLIF(ct.provider_contact_id, ''), ''),
+	COALESCE(t.schedule_id::text, ''),
 	t.created_at, t.updated_at`
 
 const taskJoins = `
@@ -45,6 +46,14 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 	}
 	if params.ConversationID != "" && !isUUID(params.ConversationID) {
 		return tasks.Page{}, ErrInvalidArgument
+	}
+	var scheduleID any
+	if params.ScheduleID != "" {
+		parsed, err := parseTaskID(params.ScheduleID)
+		if err != nil {
+			return tasks.Page{}, err
+		}
+		scheduleID = parsed
 	}
 
 	query := strings.TrimSpace(params.Query)
@@ -85,12 +94,13 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		  AND (
 		    NOT $10 OR $3 <> '' OR t.status NOT IN ('done', 'cancelled')
 		  )
+		  AND ($11::bigint IS NULL OR t.schedule_id = $11::bigint)
 		ORDER BY t.created_at DESC, t.id DESC
-		LIMIT $11`,
+		LIMIT $12`,
 		nullableTime(cursor.Time), nullableTaskID(cursor.ID),
 		params.Status, company,
 		nullableUUID(params.ContactID), nullableUUID(params.ConversationID),
-		queryID, textQuery, params.Overdue, openOnly, limit+1,
+		queryID, textQuery, params.Overdue, openOnly, scheduleID, limit+1,
 	)
 	if err != nil {
 		return tasks.Page{}, fmt.Errorf("list tasks: %w", err)
@@ -547,7 +557,7 @@ func scanTask(row taskScanner) (tasks.Task, error) {
 	if err := row.Scan(
 		&task.ID, &task.Title, &task.Description, &task.Company, &task.Status, &dueAt,
 		&task.ConversationID, &task.ContactID, &task.ConversationTitle, &task.ContactName,
-		&task.CreatedAt, &task.UpdatedAt,
+		&task.ScheduleID, &task.CreatedAt, &task.UpdatedAt,
 	); err != nil {
 		return tasks.Task{}, err
 	}

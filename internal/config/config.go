@@ -23,6 +23,7 @@ type Config struct {
 	APIToken            string
 	MCPToken            string
 	MCPEnabled          bool
+	SchedulerEnabled    bool
 	EmailCredentialsKey []byte
 	UAZAPI              UAZAPI
 	Transcription       Transcription
@@ -65,16 +66,21 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	schedulerEnabled, err := boolEnv("SCHEDULER_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
-		Environment:     stringEnv("APP_ENV", "development"),
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		HTTPHost:        stringEnv("HTTP_HOST", "127.0.0.1"),
-		HTTPPort:        port,
-		ShutdownTimeout: shutdownTimeout,
-		APIToken:        os.Getenv("API_BEARER_TOKEN"),
-		MCPToken:        os.Getenv("MCP_BEARER_TOKEN"),
-		MCPEnabled:      mcpEnabled,
+		Environment:      stringEnv("APP_ENV", "development"),
+		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		HTTPHost:         stringEnv("HTTP_HOST", "127.0.0.1"),
+		HTTPPort:         port,
+		ShutdownTimeout:  shutdownTimeout,
+		APIToken:         os.Getenv("API_BEARER_TOKEN"),
+		MCPToken:         os.Getenv("MCP_BEARER_TOKEN"),
+		MCPEnabled:       mcpEnabled,
+		SchedulerEnabled: schedulerEnabled,
 		UAZAPI: UAZAPI{
 			BaseURL:          strings.TrimRight(os.Getenv("UAZAPI_BASE_URL"), "/"),
 			Token:            os.Getenv("UAZAPI_TOKEN"),

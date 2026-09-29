@@ -15,6 +15,7 @@ import (
 	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -75,6 +76,22 @@ func (fakeStore) AttachTaskMemory(_ context.Context, taskID, _ string) (tasks.Ta
 func (fakeStore) DetachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {
 	return tasks.Task{ID: taskID, Title: "Sample"}, nil
 }
+func (fakeStore) ListTaskSchedules(context.Context, schedules.ListParams) (schedules.Page, error) {
+	return schedules.Page{}, nil
+}
+func (fakeStore) GetTaskSchedule(_ context.Context, id string) (schedules.Schedule, error) {
+	return schedules.Schedule{ID: id, Cron: "0 9 * * 1-5", Timezone: schedules.DefaultTimezone, Title: "Daily", Enabled: true}, nil
+}
+func (fakeStore) CreateTaskSchedule(_ context.Context, params schedules.CreateParams) (schedules.Schedule, error) {
+	if err := schedules.Validate(params.Cron, schedules.DefaultTimezone); err != nil {
+		return schedules.Schedule{}, err
+	}
+	return schedules.Schedule{ID: "1", Cron: params.Cron, Timezone: schedules.DefaultTimezone, Title: params.Title, Enabled: true}, nil
+}
+func (fakeStore) UpdateTaskSchedule(_ context.Context, id string, _ schedules.UpdateParams) (schedules.Schedule, error) {
+	return schedules.Schedule{ID: id, Cron: "0 9 * * 1-5", Timezone: schedules.DefaultTimezone, Title: "Daily"}, nil
+}
+func (fakeStore) DeleteTaskSchedule(context.Context, string) error { return nil }
 
 type fakeMemoryStore struct{}
 
@@ -138,8 +155,8 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 25 {
-		t.Fatalf("tools = %d, want 25 (without email service)", len(tools.Tools))
+	if len(tools.Tools) != 30 {
+		t.Fatalf("tools = %d, want 30 (without email service)", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages":    true,
@@ -153,6 +170,9 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 		"save_memory":             true,
 		"update_memory":           true,
 		"delete_memory":           true,
+		"create_task_schedule":    true,
+		"update_task_schedule":    true,
+		"delete_task_schedule":    true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {
@@ -215,6 +235,20 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil || result.IsError || result.StructuredContent == nil {
 		t.Fatalf("update_task result = %#v, err = %v", result, err)
 	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "create_task_schedule", Arguments: map[string]any{"cron": "0 9 * * 1-5", "title": "Revisar caixa de entrada"},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("create_task_schedule result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "create_task_schedule", Arguments: map[string]any{"cron": "* * * * *", "title": "Too often"},
+	})
+	if err != nil || !result.IsError {
+		t.Fatalf("create_task_schedule with sub-5-minute cron should fail: %#v, err = %v", result, err)
+	}
 }
 
 type fakeEmailStore struct{}
@@ -259,8 +293,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 34 {
-		t.Fatalf("tools = %d, want 34 with email", len(tools.Tools))
+	if len(tools.Tools) != 39 {
+		t.Fatalf("tools = %d, want 39 with email", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {

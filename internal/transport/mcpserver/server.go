@@ -16,6 +16,7 @@ import (
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/leofelipet/contexta/internal/version"
@@ -41,6 +42,11 @@ type Store interface {
 	DeleteTask(ctx context.Context, id string, deleteMemories bool) (tasks.DeleteResult, error)
 	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
+	ListTaskSchedules(context.Context, schedules.ListParams) (schedules.Page, error)
+	GetTaskSchedule(context.Context, string) (schedules.Schedule, error)
+	CreateTaskSchedule(context.Context, schedules.CreateParams) (schedules.Schedule, error)
+	UpdateTaskSchedule(context.Context, string, schedules.UpdateParams) (schedules.Schedule, error)
+	DeleteTaskSchedule(context.Context, string) error
 	RecordActivity(context.Context, activity.Record) error
 }
 
@@ -74,7 +80,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_denylist", "List conversations and contacts blocked from message ingestion."), s.listDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
-	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, text query (prefix with # for exact numeric ID), overdue, and open_only."), s.listTasks)
+	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, schedule, text query (prefix with # for exact numeric ID), overdue, and open_only."), s.listTasks)
 	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its numeric Contexta task ID (1, 2, 3…), including linked memories."), s.getTask)
 	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
 	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id. When closing a task (done or cancelled), delete_memories=true permanently deletes memories linked only to this task; use it only when that context is no longer worth keeping."), s.updateTask)
@@ -87,6 +93,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically."), s.saveMemory)
 	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links. Changing content re-embeds the memory."), s.updateMemory)
 	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
+	s.addScheduleTools(mcpServer)
 	s.addEmailTools(mcpServer)
 }
 
@@ -389,6 +396,7 @@ type listTasksInput struct {
 	Company        string `json:"company,omitempty" jsonschema:"Filter by company name substring."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
+	ScheduleID     string `json:"schedule_id,omitempty" jsonschema:"Filter by the numeric ID of the recurring schedule that created the task."`
 	Query          string `json:"query,omitempty" jsonschema:"Search text matched against title and description. Prefix with # (e.g. #12) for exact numeric task ID."`
 	Overdue        bool   `json:"overdue,omitempty" jsonschema:"When true, only open tasks with due_at in the past."`
 	OpenOnly       bool   `json:"open_only,omitempty" jsonschema:"When true and status is omitted, hide done and cancelled tasks."`
@@ -405,7 +413,7 @@ func (s *server) listTasks(ctx context.Context, _ *mcp.CallToolRequest, input li
 	s.logAccess(ctx, "list_tasks")
 	page, err := s.store.ListTasks(ctx, tasks.ListParams{
 		Status: input.Status, Company: input.Company, ContactID: input.ContactID,
-		ConversationID: input.ConversationID, Query: input.Query, Overdue: input.Overdue,
+		ConversationID: input.ConversationID, ScheduleID: input.ScheduleID, Query: input.Query, Overdue: input.Overdue,
 		OpenOnly: input.OpenOnly, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {

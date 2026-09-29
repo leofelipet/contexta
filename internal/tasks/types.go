@@ -41,6 +41,7 @@ type Task struct {
 	ContactID         string      `json:"contact_id,omitempty"`
 	ConversationTitle string      `json:"conversation_title,omitempty"`
 	ContactName       string      `json:"contact_name,omitempty"`
+	ScheduleID        string      `json:"schedule_id,omitempty"`
 	Memories          []MemoryRef `json:"memories,omitempty"`
 	CreatedAt         time.Time   `json:"created_at"`
 	UpdatedAt         time.Time   `json:"updated_at"`
@@ -88,6 +89,7 @@ type ListParams struct {
 	Company        string
 	ContactID      string
 	ConversationID string
+	ScheduleID     string
 	Query          string
 	Overdue        bool
 	OpenOnly       bool // when true and Status empty, exclude done/cancelled

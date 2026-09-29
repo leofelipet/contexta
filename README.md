@@ -86,6 +86,17 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 `get_email` never marks messages as read; agents call `mark_email_read` explicitly. `delete_email` moves mail to the Trash folder. When the message is already in Trash, or the account has no Trash folder, it permanently expunges only that message and refuses when the server lacks UIDPLUS.
 
+## Recurring tasks
+
+The task scheduler turns cron schedules into tasks. A background worker ticks every 5 minutes on the wall clock (`:00`, `:05`, `:10`…) and once at startup; each enabled schedule whose `next_run_at` has passed creates one `pending` task from its template (`title`, `description`, `company`, `conversation_id`, `contact_id`, and an optional `due_in_minutes` offset). Created tasks carry `schedule_id`, and `list_tasks` / `GET /api/v1/tasks?schedule_id=` filter by it.
+
+- `cron` is a standard 5-field expression (`0 9 * * 1-5`) or a descriptor (`@daily`, `@weekly`, `@monthly`). Expressions that fire more often than every 5 minutes are rejected; minutes off the 5-minute grid run on the next tick.
+- `timezone` is an IANA name and defaults to `America/Sao_Paulo`.
+- Runs missed while the server was down are collapsed into a single task on the next tick; there is no backfill.
+- `skip_if_open=true` skips an occurrence while the task created by the previous run is still open.
+- Each schedule is claimed with `FOR UPDATE SKIP LOCKED`, so multiple replicas never create duplicates. Set `SCHEDULER_ENABLED=false` to stop the worker on a replica.
+- Deleting a schedule keeps the tasks it already created.
+
 ## Endpoints
 
 Health checks:
@@ -123,6 +134,11 @@ GET /api/v1/email-accounts/{id}
 PATCH /api/v1/email-accounts/{id}
 DELETE /api/v1/email-accounts/{id}
 POST /api/v1/email-accounts/{id}/test
+GET /api/v1/task-schedules
+POST /api/v1/task-schedules
+GET /api/v1/task-schedules/{id}
+PATCH /api/v1/task-schedules/{id}
+DELETE /api/v1/task-schedules/{id}
 GET /api/v1/mcp/status
 GET /api/v1/activity
 ```
@@ -148,6 +164,11 @@ get_messages
 get_messages_around
 list_contacts
 get_contact
+list_task_schedules
+get_task_schedule
+create_task_schedule
+update_task_schedule
+delete_task_schedule
 ```
 
 Email tools, registered when the email service is available:
