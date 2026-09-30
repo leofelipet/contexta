@@ -12,7 +12,8 @@ type Schedule struct {
 	SkipIfOpen     bool       `json:"skip_if_open"`
 	Title          string     `json:"title"`
 	Description    string     `json:"description,omitempty"`
-	Company        string     `json:"company,omitempty"`
+	CompanyID      string     `json:"company_id,omitempty"`
+	CompanyName    string     `json:"company_name,omitempty"`
 	DueInMinutes   *int       `json:"due_in_minutes,omitempty"`
 	ConversationID string     `json:"conversation_id,omitempty"`
 	ContactID      string     `json:"contact_id,omitempty"`
@@ -31,14 +32,14 @@ type CreateParams struct {
 	SkipIfOpen     bool
 	Title          string
 	Description    string
-	Company        string
+	CompanyID      string
 	DueInMinutes   *int
 	ConversationID string
 	ContactID      string
 }
 
 // UpdateParams uses pointers to distinguish omitted fields from clears.
-// Empty string on ConversationID/ContactID clears the link; a zero
+// Empty string on CompanyID/ConversationID/ContactID clears the link; a zero
 // DueInMinutes clears the due offset.
 type UpdateParams struct {
 	Cron           *string
@@ -47,17 +48,18 @@ type UpdateParams struct {
 	SkipIfOpen     *bool
 	Title          *string
 	Description    *string
-	Company        *string
+	CompanyID      *string
 	DueInMinutes   *int
 	ConversationID *string
 	ContactID      *string
 }
 
 type ListParams struct {
-	Enabled *bool
-	Query   string
-	Limit   int
-	Cursor  string
+	Enabled   *bool
+	CompanyID string
+	Query     string
+	Limit     int
+	Cursor    string
 }
 
 type Page struct {

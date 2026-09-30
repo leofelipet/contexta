@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leofelipet/contexta/internal/companies"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/tasks"
 )
@@ -62,8 +63,12 @@ func TestTaskSchedules(t *testing.T) {
 
 	t.Run("due schedule creates one task and advances", func(t *testing.T) {
 		due := 60
+		company, err := store.CreateCompany(ctx, companies.CreateParams{Name: "ACME schedules " + time.Now().Format(time.RFC3339Nano)})
+		if err != nil {
+			t.Fatal(err)
+		}
 		schedule, err := store.CreateTaskSchedule(ctx, schedules.CreateParams{
-			Cron: "0 9 * * *", Title: "Scheduled", Company: "ACME", DueInMinutes: &due,
+			Cron: "0 9 * * *", Title: "Scheduled", CompanyID: company.ID, DueInMinutes: &due,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -78,7 +83,7 @@ func TestTaskSchedules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if task.Title != "Scheduled" || task.Company != "ACME" || task.Status != tasks.StatusPending || task.ScheduleID != schedule.ID || task.DueAt == nil {
+		if task.Title != "Scheduled" || task.CompanyID != company.ID || task.CompanyName != company.Name || task.Status != tasks.StatusPending || task.ScheduleID != schedule.ID || task.DueAt == nil {
 			t.Fatalf("task = %#v", task)
 		}
 

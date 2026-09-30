@@ -9,6 +9,7 @@ import (
 
 	"github.com/leofelipet/contexta/internal/activity"
 	"github.com/leofelipet/contexta/internal/auth"
+	"github.com/leofelipet/contexta/internal/companies"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
@@ -35,6 +36,13 @@ type Store interface {
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
 	RemoveDenylistEntry(context.Context, string) error
+	ListCompanies(context.Context, companies.ListParams) (companies.Page, error)
+	GetCompany(context.Context, string) (companies.Company, error)
+	CreateCompany(context.Context, companies.CreateParams) (companies.Company, error)
+	UpdateCompany(context.Context, string, companies.UpdateParams) (companies.Company, error)
+	DeleteCompany(context.Context, string) error
+	AttachContactToCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
+	DetachContactFromCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
 	GetTask(context.Context, string) (tasks.Task, error)
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
@@ -75,15 +83,15 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID."), s.getConversation)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages", "Get a paginated page of messages from one conversation."), s.getMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages_around", "Get messages immediately before and after a selected message for local context."), s.getMessagesAround)
-	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts."), s.listContacts)
+	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts, optionally only those linked to a company."), s.listContacts)
 	mcp.AddTool(mcpServer, readOnlyTool("get_contact", "Get one contact by its Contexta contact ID."), s.getContact)
 	mcp.AddTool(mcpServer, readOnlyTool("list_denylist", "List conversations and contacts blocked from message ingestion."), s.listDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("add_to_denylist", "Block future message ingestion for a conversation (e.g. group) or contact (direct chat only)."), s.addToDenylist)
 	mcp.AddTool(mcpServer, localWriteTool("remove_from_denylist", "Remove a denylist entry so messages from that target are ingested again."), s.removeFromDenylist)
-	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company, contact, conversation, schedule, text query (prefix with # for exact numeric ID), overdue, and open_only."), s.listTasks)
+	mcp.AddTool(mcpServer, readOnlyTool("list_tasks", "List tasks with optional filters for status, company (company_id or name substring), contact, conversation, schedule, text query (prefix with # for exact numeric ID), overdue, and open_only."), s.listTasks)
 	mcp.AddTool(mcpServer, readOnlyTool("get_task", "Get one task by its numeric Contexta task ID (1, 2, 3…), including linked memories."), s.getTask)
-	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company, due date, status, description, and optional WhatsApp contact or conversation link."), s.createTask)
-	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, conversation_id, or contact_id. When closing a task (done or cancelled), delete_memories=true permanently deletes memories linked only to this task; use it only when that context is no longer worth keeping."), s.updateTask)
+	mcp.AddTool(mcpServer, localWriteTool("create_task", "Create a task with title, optional company_id (see list_companies), due date, status, description, and optional WhatsApp contact or conversation link. Without company_id, the task inherits the linked contact's company."), s.createTask)
+	mcp.AddTool(mcpServer, localWriteTool("update_task", "Update task fields. Setting status to done sets due_at to now. Pass empty strings to clear due_at, company_id, conversation_id, or contact_id. When closing a task (done or cancelled), delete_memories=true permanently deletes memories linked only to this task; use it only when that context is no longer worth keeping."), s.updateTask)
 	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID. With delete_memories=true, also permanently deletes memories linked only to this task; memories linked to other tasks are kept."), s.deleteTask)
 	mcp.AddTool(mcpServer, localWriteTool("attach_memory_to_task", "Link an existing memory to a task. A task can have unlimited memories; the same memory may link to multiple tasks."), s.attachMemoryToTask)
 	mcp.AddTool(mcpServer, localWriteTool("detach_memory_from_task", "Remove the link between a task and a memory without deleting either."), s.detachMemoryFromTask)
@@ -93,6 +101,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically."), s.saveMemory)
 	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links. Changing content re-embeds the memory."), s.updateMemory)
 	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
+	s.addCompanyTools(mcpServer)
 	s.addScheduleTools(mcpServer)
 	s.addEmailTools(mcpServer)
 }
@@ -298,9 +307,10 @@ func (s *server) getMessagesAround(ctx context.Context, _ *mcp.CallToolRequest, 
 }
 
 type listContactsInput struct {
-	Query  string `json:"query,omitempty" jsonschema:"Name or phone fragment."`
-	Limit  int    `json:"limit,omitempty" jsonschema:"Maximum number of contacts, up to 100."`
-	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+	Query     string `json:"query,omitempty" jsonschema:"Name or phone fragment."`
+	CompanyID string `json:"company_id,omitempty" jsonschema:"Only return contacts linked to this numeric company ID."`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum number of contacts, up to 100."`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
 }
 
 type contactsOutput struct {
@@ -310,7 +320,7 @@ type contactsOutput struct {
 
 func (s *server) listContacts(ctx context.Context, _ *mcp.CallToolRequest, input listContactsInput) (*mcp.CallToolResult, contactsOutput, error) {
 	s.logAccess(ctx, "list_contacts")
-	page, err := s.store.ListContacts(ctx, contacts.ListParams{Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor})
+	page, err := s.store.ListContacts(ctx, contacts.ListParams{Query: input.Query, CompanyID: input.CompanyID, Limit: mcpLimit(input.Limit), Cursor: input.Cursor})
 	if err != nil {
 		s.logError(ctx, "list_contacts", err)
 		return nil, contactsOutput{}, safeToolError(err)
@@ -393,6 +403,7 @@ func (s *server) removeFromDenylist(ctx context.Context, _ *mcp.CallToolRequest,
 
 type listTasksInput struct {
 	Status         string `json:"status,omitempty" jsonschema:"Task status: pending, in_progress, blocked, done, or cancelled."`
+	CompanyID      string `json:"company_id,omitempty" jsonschema:"Filter by numeric company ID."`
 	Company        string `json:"company,omitempty" jsonschema:"Filter by company name substring."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
@@ -412,7 +423,7 @@ type tasksOutput struct {
 func (s *server) listTasks(ctx context.Context, _ *mcp.CallToolRequest, input listTasksInput) (*mcp.CallToolResult, tasksOutput, error) {
 	s.logAccess(ctx, "list_tasks")
 	page, err := s.store.ListTasks(ctx, tasks.ListParams{
-		Status: input.Status, Company: input.Company, ContactID: input.ContactID,
+		Status: input.Status, CompanyID: input.CompanyID, Company: input.Company, ContactID: input.ContactID,
 		ConversationID: input.ConversationID, ScheduleID: input.ScheduleID, Query: input.Query, Overdue: input.Overdue,
 		OpenOnly: input.OpenOnly, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
@@ -444,7 +455,7 @@ func (s *server) getTask(ctx context.Context, _ *mcp.CallToolRequest, input task
 type createTaskInput struct {
 	Title          string `json:"title" jsonschema:"Required task title."`
 	Description    string `json:"description,omitempty" jsonschema:"Optional task description."`
-	Company        string `json:"company,omitempty" jsonschema:"Optional free-text company name."`
+	CompanyID      string `json:"company_id,omitempty" jsonschema:"Optional numeric company ID. Defaults to the linked contact's company, if any."`
 	Status         string `json:"status,omitempty" jsonschema:"pending, in_progress, blocked, done, or cancelled. Defaults to pending."`
 	DueAt          string `json:"due_at,omitempty" jsonschema:"Optional due date as RFC3339 or YYYY-MM-DD."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID to link."`
@@ -458,7 +469,7 @@ func (s *server) createTask(ctx context.Context, _ *mcp.CallToolRequest, input c
 		return nil, taskOutput{}, errors.New("invalid due_at; expected RFC3339 or YYYY-MM-DD")
 	}
 	task, err := s.store.CreateTask(ctx, tasks.CreateParams{
-		Title: input.Title, Description: input.Description, Company: input.Company,
+		Title: input.Title, Description: input.Description, CompanyID: input.CompanyID,
 		Status: input.Status, DueAt: dueAt,
 		ConversationID: input.ConversationID, ContactID: input.ContactID,
 	})
@@ -473,7 +484,7 @@ type updateTaskInput struct {
 	ID             string  `json:"id" jsonschema:"Required numeric Contexta task ID (e.g. 1, 2, 3)."`
 	Title          *string `json:"title,omitempty" jsonschema:"New title."`
 	Description    *string `json:"description,omitempty" jsonschema:"New description."`
-	Company        *string `json:"company,omitempty" jsonschema:"New company name."`
+	CompanyID      *string `json:"company_id,omitempty" jsonschema:"Linked numeric company ID. Empty string clears it."`
 	Status         *string `json:"status,omitempty" jsonschema:"pending, in_progress, blocked, done, or cancelled."`
 	DueAt          *string `json:"due_at,omitempty" jsonschema:"New due date as RFC3339 or YYYY-MM-DD. Empty string clears it."`
 	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
@@ -489,7 +500,7 @@ type updateTaskOutput struct {
 func (s *server) updateTask(ctx context.Context, _ *mcp.CallToolRequest, input updateTaskInput) (*mcp.CallToolResult, updateTaskOutput, error) {
 	s.logAccess(ctx, "update_task")
 	task, cleanup, err := s.store.UpdateTask(ctx, input.ID, tasks.UpdateParams{
-		Title: input.Title, Description: input.Description, Company: input.Company,
+		Title: input.Title, Description: input.Description, CompanyID: input.CompanyID,
 		Status: input.Status, DueAt: input.DueAt,
 		ConversationID: input.ConversationID, ContactID: input.ContactID,
 		DeleteMemories: input.DeleteMemories,

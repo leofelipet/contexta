@@ -14,7 +14,8 @@ import (
 )
 
 const taskSelectCols = `
-	t.id::text, t.title, t.description, t.company, t.status, t.due_at,
+	t.id::text, t.title, t.description,
+	COALESCE(t.company_id::text, ''), COALESCE(co.name, ''), t.status, t.due_at,
 	COALESCE(t.conversation_id::text, ''), COALESCE(t.contact_id::text, ''),
 	COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''),
 	         NULLIF(cc.phone, ''), NULLIF(c.provider_conversation_id, ''), ''),
@@ -25,6 +26,7 @@ const taskSelectCols = `
 
 const taskJoins = `
 	FROM tasks t
+	LEFT JOIN companies co ON co.id = t.company_id
 	LEFT JOIN conversations c ON c.id = t.conversation_id
 	LEFT JOIN contacts cc ON cc.id = c.contact_id
 	LEFT JOIN contacts ct ON ct.id = t.contact_id`
@@ -55,6 +57,14 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		}
 		scheduleID = parsed
 	}
+	var companyID any
+	if params.CompanyID != "" {
+		parsed, err := parseTaskID(params.CompanyID)
+		if err != nil {
+			return tasks.Page{}, err
+		}
+		companyID = parsed
+	}
 
 	query := strings.TrimSpace(params.Query)
 	company := strings.TrimSpace(params.Company)
@@ -79,7 +89,7 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		SELECT `+taskSelectCols+taskJoins+`
 		WHERE ($1::timestamptz IS NULL OR (t.created_at, t.id) < ($1, $2::bigint))
 		  AND ($3 = '' OR t.status = $3)
-		  AND ($4 = '' OR t.company ILIKE '%' || $4 || '%')
+		  AND ($4 = '' OR co.name ILIKE '%' || $4 || '%')
 		  AND ($5::uuid IS NULL OR t.contact_id = $5::uuid)
 		  AND ($6::uuid IS NULL OR t.conversation_id = $6::uuid)
 		  AND ($7::bigint IS NULL OR t.id = $7::bigint)
@@ -95,12 +105,13 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		    NOT $10 OR $3 <> '' OR t.status NOT IN ('done', 'cancelled')
 		  )
 		  AND ($11::bigint IS NULL OR t.schedule_id = $11::bigint)
+		  AND ($12::bigint IS NULL OR t.company_id = $12::bigint)
 		ORDER BY t.created_at DESC, t.id DESC
-		LIMIT $12`,
+		LIMIT $13`,
 		nullableTime(cursor.Time), nullableTaskID(cursor.ID),
 		params.Status, company,
 		nullableUUID(params.ContactID), nullableUUID(params.ConversationID),
-		queryID, textQuery, params.Overdue, openOnly, scheduleID, limit+1,
+		queryID, textQuery, params.Overdue, openOnly, scheduleID, companyID, limit+1,
 	)
 	if err != nil {
 		return tasks.Page{}, fmt.Errorf("list tasks: %w", err)
@@ -157,9 +168,9 @@ func (s *Store) CreateTask(ctx context.Context, params tasks.CreateParams) (task
 	if len(description) > 10000 {
 		return tasks.Task{}, ErrInvalidArgument
 	}
-	company := strings.TrimSpace(params.Company)
-	if len(company) > 200 {
-		return tasks.Task{}, ErrInvalidArgument
+	companyID, err := s.optionalCompanyID(ctx, params.CompanyID)
+	if err != nil {
+		return tasks.Task{}, err
 	}
 	status := strings.TrimSpace(params.Status)
 	if status == "" {
@@ -201,12 +212,15 @@ func (s *Store) CreateTask(ctx context.Context, params tasks.CreateParams) (task
 		dueAt = &now
 	}
 
+	// Without an explicit company, the task inherits the linked contact's company.
 	var id string
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO tasks (title, description, company, status, due_at, conversation_id, contact_id)
-		VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid)
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO tasks (title, description, company_id, status, due_at, conversation_id, contact_id)
+		VALUES ($1, $2,
+		        COALESCE($3::bigint, (SELECT company_id FROM contacts WHERE id = $7::uuid)),
+		        $4, $5, $6::uuid, $7::uuid)
 		RETURNING id::text`,
-		title, description, company, status, dueAt,
+		title, description, companyID, status, dueAt,
 		nullableUUID(conversationID), nullableUUID(contactID),
 	).Scan(&id)
 	if err != nil {
@@ -241,11 +255,11 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 			return tasks.Task{}, cleanup, ErrInvalidArgument
 		}
 	}
-	company := current.Company
-	if params.Company != nil {
-		company = strings.TrimSpace(*params.Company)
-		if len(company) > 200 {
-			return tasks.Task{}, cleanup, ErrInvalidArgument
+	companyID := nullableTaskID(current.CompanyID)
+	if params.CompanyID != nil {
+		companyID, err = s.optionalCompanyID(ctx, *params.CompanyID)
+		if err != nil {
+			return tasks.Task{}, cleanup, err
 		}
 	}
 	status := current.Status
@@ -323,14 +337,14 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 		UPDATE tasks SET
 			title = $2,
 			description = $3,
-			company = $4,
+			company_id = $4::bigint,
 			status = $5,
 			due_at = $6,
 			conversation_id = $7::uuid,
 			contact_id = $8::uuid,
 			updated_at = now()
 		WHERE id = $1`,
-		taskID, title, description, company, status, dueAt,
+		taskID, title, description, companyID, status, dueAt,
 		nullableUUID(conversationID), nullableUUID(contactID),
 	)
 	if err != nil {
@@ -555,7 +569,7 @@ func scanTask(row taskScanner) (tasks.Task, error) {
 	var task tasks.Task
 	var dueAt *time.Time
 	if err := row.Scan(
-		&task.ID, &task.Title, &task.Description, &task.Company, &task.Status, &dueAt,
+		&task.ID, &task.Title, &task.Description, &task.CompanyID, &task.CompanyName, &task.Status, &dueAt,
 		&task.ConversationID, &task.ContactID, &task.ConversationTitle, &task.ContactName,
 		&task.ScheduleID, &task.CreatedAt, &task.UpdatedAt,
 	); err != nil {

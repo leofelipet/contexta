@@ -16,7 +16,7 @@ type createTaskScheduleRequest struct {
 	SkipIfOpen     bool   `json:"skip_if_open"`
 	Title          string `json:"title"`
 	Description    string `json:"description"`
-	Company        string `json:"company"`
+	CompanyID      string `json:"company_id"`
 	DueInMinutes   *int   `json:"due_in_minutes"`
 	ConversationID string `json:"conversation_id"`
 	ContactID      string `json:"contact_id"`
@@ -29,7 +29,7 @@ type updateTaskScheduleRequest struct {
 	SkipIfOpen     *bool   `json:"skip_if_open"`
 	Title          *string `json:"title"`
 	Description    *string `json:"description"`
-	Company        *string `json:"company"`
+	CompanyID      *string `json:"company_id"`
 	DueInMinutes   *int    `json:"due_in_minutes"`
 	ConversationID *string `json:"conversation_id"`
 	ContactID      *string `json:"contact_id"`
@@ -47,7 +47,7 @@ func (h *handler) listTaskSchedules(w http.ResponseWriter, r *http.Request) {
 		enabled = &parsed
 	}
 	page, err := h.store.ListTaskSchedules(r.Context(), schedules.ListParams{
-		Enabled: enabled, Query: query.Get("q"), Limit: parseLimit(r), Cursor: query.Get("cursor"),
+		Enabled: enabled, CompanyID: query.Get("company_id"), Query: query.Get("q"), Limit: parseLimit(r), Cursor: query.Get("cursor"),
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -75,7 +75,7 @@ func (h *handler) createTaskSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	schedule, err := h.store.CreateTaskSchedule(r.Context(), schedules.CreateParams{
 		Cron: request.Cron, Timezone: request.Timezone, Enabled: request.Enabled, SkipIfOpen: request.SkipIfOpen,
-		Title: request.Title, Description: request.Description, Company: request.Company,
+		Title: request.Title, Description: request.Description, CompanyID: request.CompanyID,
 		DueInMinutes: request.DueInMinutes, ConversationID: request.ConversationID, ContactID: request.ContactID,
 	})
 	if err != nil {
@@ -99,7 +99,7 @@ func (h *handler) updateTaskSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	schedule, err := h.store.UpdateTaskSchedule(r.Context(), r.PathValue("id"), schedules.UpdateParams{
 		Cron: request.Cron, Timezone: request.Timezone, Enabled: request.Enabled, SkipIfOpen: request.SkipIfOpen,
-		Title: request.Title, Description: request.Description, Company: request.Company,
+		Title: request.Title, Description: request.Description, CompanyID: request.CompanyID,
 		DueInMinutes: request.DueInMinutes, ConversationID: request.ConversationID, ContactID: request.ContactID,
 	})
 	if err != nil {

@@ -86,9 +86,18 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 `get_email` never marks messages as read; agents call `mark_email_read` explicitly. `delete_email` moves mail to the Trash folder. When the message is already in Trash, or the account has no Trash folder, it permanently expunges only that message and refuses when the server lacks UIDPLUS.
 
+## Companies
+
+Companies group tasks, recurring schedules, and WhatsApp contacts. A company has a unique name (case-insensitive) and free-text notes; each task, schedule, and contact links to at most one company through `company_id`.
+
+- `GET /api/v1/tasks?company_id=`, `GET /api/v1/contacts?company_id=`, and `GET /api/v1/task-schedules?company_id=` list what is linked to a company. `list_tasks` also accepts `company` as a name substring.
+- A task created with a `contact_id` and no `company_id` inherits the contact's company.
+- Deleting a company keeps its tasks, schedules, and contacts, which lose the link.
+- Migration `013` converted the previous free-text `company` field of tasks and schedules into companies, merging names that differ only by case or surrounding whitespace.
+
 ## Recurring tasks
 
-The task scheduler turns cron schedules into tasks. A background worker ticks every 5 minutes on the wall clock (`:00`, `:05`, `:10`…) and once at startup; each enabled schedule whose `next_run_at` has passed creates one `pending` task from its template (`title`, `description`, `company`, `conversation_id`, `contact_id`, and an optional `due_in_minutes` offset). Created tasks carry `schedule_id`, and `list_tasks` / `GET /api/v1/tasks?schedule_id=` filter by it.
+The task scheduler turns cron schedules into tasks. A background worker ticks every 5 minutes on the wall clock (`:00`, `:05`, `:10`…) and once at startup; each enabled schedule whose `next_run_at` has passed creates one `pending` task from its template (`title`, `description`, `company_id`, `conversation_id`, `contact_id`, and an optional `due_in_minutes` offset). Created tasks carry `schedule_id`, and `list_tasks` / `GET /api/v1/tasks?schedule_id=` filter by it.
 
 - `cron` is a standard 5-field expression (`0 9 * * 1-5`) or a descriptor (`@daily`, `@weekly`, `@monthly`). Expressions that fire more often than every 5 minutes are rejected; minutes off the 5-minute grid run on the next tick.
 - `timezone` is an IANA name and defaults to `America/Sao_Paulo`.
@@ -128,6 +137,13 @@ GET /api/v1/messages/{id}/around
 GET /api/v1/dashboard
 GET /api/v1/integrations/uazapi
 POST /api/v1/integrations/uazapi/configure-webhook
+GET /api/v1/companies
+POST /api/v1/companies
+GET /api/v1/companies/{id}
+PATCH /api/v1/companies/{id}
+DELETE /api/v1/companies/{id}
+POST /api/v1/companies/{id}/contacts
+DELETE /api/v1/companies/{id}/contacts/{contact_id}
 GET /api/v1/email-accounts
 POST /api/v1/email-accounts
 GET /api/v1/email-accounts/{id}
@@ -164,6 +180,13 @@ get_messages
 get_messages_around
 list_contacts
 get_contact
+list_companies
+get_company
+create_company
+update_company
+delete_company
+attach_contact_to_company
+detach_contact_from_company
 list_task_schedules
 get_task_schedule
 create_task_schedule

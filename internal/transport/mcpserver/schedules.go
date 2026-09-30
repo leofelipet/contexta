@@ -19,7 +19,8 @@ func (s *server) addScheduleTools(mcpServer *mcp.Server) {
 }
 
 type listTaskSchedulesInput struct {
-	Enabled *bool  `json:"enabled,omitempty" jsonschema:"When set, only return enabled (true) or paused (false) schedules."`
+	Enabled   *bool  `json:"enabled,omitempty" jsonschema:"When set, only return enabled (true) or paused (false) schedules."`
+	CompanyID string `json:"company_id,omitempty" jsonschema:"Only return schedules linked to this numeric company ID."`
 	Query   string `json:"query,omitempty" jsonschema:"Text matched against title and description, or an exact numeric schedule ID."`
 	Limit   int    `json:"limit,omitempty" jsonschema:"Maximum number of schedules, up to 100."`
 	Cursor  string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
@@ -33,7 +34,7 @@ type taskSchedulesOutput struct {
 func (s *server) listTaskSchedules(ctx context.Context, _ *mcp.CallToolRequest, input listTaskSchedulesInput) (*mcp.CallToolResult, taskSchedulesOutput, error) {
 	s.logAccess(ctx, "list_task_schedules")
 	page, err := s.store.ListTaskSchedules(ctx, schedules.ListParams{
-		Enabled: input.Enabled, Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
+		Enabled: input.Enabled, CompanyID: input.CompanyID, Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
 		s.logError(ctx, "list_task_schedules", err)
@@ -65,7 +66,7 @@ type createTaskScheduleInput struct {
 	Timezone       string `json:"timezone,omitempty" jsonschema:"IANA timezone used to evaluate cron, e.g. America/Sao_Paulo (default)."`
 	Title          string `json:"title" jsonschema:"Required title of each created task."`
 	Description    string `json:"description,omitempty" jsonschema:"Optional description of each created task."`
-	Company        string `json:"company,omitempty" jsonschema:"Optional company name of each created task."`
+	CompanyID      string `json:"company_id,omitempty" jsonschema:"Optional numeric company ID linked to each created task."`
 	DueInMinutes   *int   `json:"due_in_minutes,omitempty" jsonschema:"Optional: created tasks get due_at = creation time + this many minutes (e.g. 480 for 8 hours)."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID to link on each created task."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID to link on each created task."`
@@ -77,7 +78,7 @@ func (s *server) createTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest,
 	s.logAccess(ctx, "create_task_schedule")
 	schedule, err := s.store.CreateTaskSchedule(ctx, schedules.CreateParams{
 		Cron: input.Cron, Timezone: input.Timezone, Enabled: input.Enabled, SkipIfOpen: input.SkipIfOpen,
-		Title: input.Title, Description: input.Description, Company: input.Company,
+		Title: input.Title, Description: input.Description, CompanyID: input.CompanyID,
 		DueInMinutes: input.DueInMinutes, ConversationID: input.ConversationID, ContactID: input.ContactID,
 	})
 	if err != nil {
@@ -93,7 +94,7 @@ type updateTaskScheduleInput struct {
 	Timezone       *string `json:"timezone,omitempty" jsonschema:"New IANA timezone. Empty string resets to America/Sao_Paulo."`
 	Title          *string `json:"title,omitempty" jsonschema:"New task title."`
 	Description    *string `json:"description,omitempty" jsonschema:"New task description."`
-	Company        *string `json:"company,omitempty" jsonschema:"New company name."`
+	CompanyID      *string `json:"company_id,omitempty" jsonschema:"Linked numeric company ID. Empty string clears it."`
 	DueInMinutes   *int    `json:"due_in_minutes,omitempty" jsonschema:"New due offset in minutes. 0 clears it."`
 	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
 	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
@@ -105,7 +106,7 @@ func (s *server) updateTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest,
 	s.logAccess(ctx, "update_task_schedule")
 	schedule, err := s.store.UpdateTaskSchedule(ctx, input.ID, schedules.UpdateParams{
 		Cron: input.Cron, Timezone: input.Timezone, Enabled: input.Enabled, SkipIfOpen: input.SkipIfOpen,
-		Title: input.Title, Description: input.Description, Company: input.Company,
+		Title: input.Title, Description: input.Description, CompanyID: input.CompanyID,
 		DueInMinutes: input.DueInMinutes, ConversationID: input.ConversationID, ContactID: input.ContactID,
 	})
 	if err != nil {

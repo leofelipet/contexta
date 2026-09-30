@@ -34,7 +34,8 @@ type Task struct {
 	ID                string      `json:"id"`
 	Title             string      `json:"title"`
 	Description       string      `json:"description,omitempty"`
-	Company           string      `json:"company,omitempty"`
+	CompanyID         string      `json:"company_id,omitempty"`
+	CompanyName       string      `json:"company_name,omitempty"`
 	Status            string      `json:"status"`
 	DueAt             *time.Time  `json:"due_at,omitempty"`
 	ConversationID    string      `json:"conversation_id,omitempty"`
@@ -50,7 +51,7 @@ type Task struct {
 type CreateParams struct {
 	Title          string
 	Description    string
-	Company        string
+	CompanyID      string // empty inherits the linked contact's company
 	Status         string
 	DueAt          *time.Time
 	ConversationID string
@@ -58,11 +59,11 @@ type CreateParams struct {
 }
 
 // UpdateParams uses pointers to distinguish omitted fields from clears.
-// Empty string on DueAt/ConversationID/ContactID clears the value when the pointer is non-nil.
+// Empty string on DueAt/CompanyID/ConversationID/ContactID clears the value when the pointer is non-nil.
 type UpdateParams struct {
 	Title          *string
 	Description    *string
-	Company        *string
+	CompanyID      *string
 	Status         *string
 	DueAt          *string
 	ConversationID *string
@@ -86,7 +87,8 @@ type DeleteResult struct {
 
 type ListParams struct {
 	Status         string
-	Company        string
+	CompanyID      string
+	Company        string // company name substring
 	ContactID      string
 	ConversationID string
 	ScheduleID     string

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/leofelipet/contexta/internal/activity"
+	"github.com/leofelipet/contexta/internal/companies"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
@@ -55,6 +56,25 @@ func (fakeStore) AddDenylistEntry(context.Context, denylist.AddParams) (denylist
 	return denylist.Entry{ID: "denylist-1", TargetType: denylist.TargetConversation}, nil
 }
 func (fakeStore) RemoveDenylistEntry(context.Context, string) error { return nil }
+func (fakeStore) ListCompanies(context.Context, companies.ListParams) (companies.Page, error) {
+	return companies.Page{Companies: []companies.Company{}}, nil
+}
+func (fakeStore) GetCompany(_ context.Context, id string) (companies.Company, error) {
+	return companies.Company{ID: id, Name: "ACME"}, nil
+}
+func (fakeStore) CreateCompany(_ context.Context, params companies.CreateParams) (companies.Company, error) {
+	return companies.Company{ID: "1", Name: params.Name, Notes: params.Notes}, nil
+}
+func (fakeStore) UpdateCompany(_ context.Context, id string, _ companies.UpdateParams) (companies.Company, error) {
+	return companies.Company{ID: id, Name: "ACME"}, nil
+}
+func (fakeStore) DeleteCompany(context.Context, string) error { return nil }
+func (fakeStore) AttachContactToCompany(_ context.Context, companyID, _ string) (companies.Company, error) {
+	return companies.Company{ID: companyID, Name: "ACME", ContactCount: 1}, nil
+}
+func (fakeStore) DetachContactFromCompany(_ context.Context, companyID, _ string) (companies.Company, error) {
+	return companies.Company{ID: companyID, Name: "ACME"}, nil
+}
 func (fakeStore) ListTasks(context.Context, tasks.ListParams) (tasks.Page, error) {
 	return tasks.Page{}, nil
 }
@@ -155,8 +175,8 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 30 {
-		t.Fatalf("tools = %d, want 30 (without email service)", len(tools.Tools))
+	if len(tools.Tools) != 37 {
+		t.Fatalf("tools = %d, want 37 (without email service)", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages":    true,
@@ -173,6 +193,11 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 		"create_task_schedule":    true,
 		"update_task_schedule":    true,
 		"delete_task_schedule":    true,
+		"create_company":              true,
+		"update_company":              true,
+		"delete_company":              true,
+		"attach_contact_to_company":   true,
+		"detach_contact_from_company": true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {
@@ -293,8 +318,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 39 {
-		t.Fatalf("tools = %d, want 39 with email", len(tools.Tools))
+	if len(tools.Tools) != 46 {
+		t.Fatalf("tools = %d, want 46 with email", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {

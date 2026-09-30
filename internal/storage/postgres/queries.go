@@ -30,18 +30,27 @@ func (s *Store) ListContacts(ctx context.Context, params contacts.ListParams) (c
 		return contacts.Page{}, pagination.ErrInvalidCursor
 	}
 
+	var companyID any
+	if params.CompanyID != "" {
+		parsed, err := parseTaskID(params.CompanyID)
+		if err != nil {
+			return contacts.Page{}, err
+		}
+		companyID = parsed
+	}
+
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id::text, c.provider_contact_id, c.phone,
-		       `+contactDisplayNameSQL("c")+` AS display_name,
-		       c.push_name, c.profile_picture_url, c.created_at, c.updated_at
+		SELECT `+contactSelectCols+`
 		FROM contacts c
+		LEFT JOIN companies co ON co.id = c.company_id
 		WHERE ($1 = '' OR `+contactDisplayNameSQL("c")+` ILIKE '%' || $1 || '%'
 		           OR c.phone ILIKE '%' || $1 || '%'
 		           OR c.name ILIKE '%' || $1 || '%'
 		           OR c.push_name ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR (lower(`+contactDisplayNameSQL("c")+`), c.id) > (lower($2), $3::uuid))
+		  AND ($4::bigint IS NULL OR c.company_id = $4::bigint)
 		ORDER BY lower(`+contactDisplayNameSQL("c")+`), c.id
-		LIMIT $4`, params.Query, cursor.Text, nullableUUID(cursor.ID), limit+1)
+		LIMIT $5`, params.Query, cursor.Text, nullableUUID(cursor.ID), companyID, limit+1)
 	if err != nil {
 		return contacts.Page{}, fmt.Errorf("list contacts: %w", err)
 	}
@@ -50,8 +59,7 @@ func (s *Store) ListContacts(ctx context.Context, params contacts.ListParams) (c
 	result := make([]contacts.Contact, 0, limit+1)
 	for rows.Next() {
 		var contact contacts.Contact
-		if err := rows.Scan(&contact.ID, &contact.ProviderContactID, &contact.Phone, &contact.Name,
-			&contact.PushName, &contact.ProfilePictureURL, &contact.CreatedAt, &contact.UpdatedAt); err != nil {
+		if err := rows.Scan(contactScanDest(&contact)...); err != nil {
 			return contacts.Page{}, fmt.Errorf("scan contact: %w", err)
 		}
 		result = append(result, contact)
@@ -75,13 +83,10 @@ func (s *Store) GetContact(ctx context.Context, id string) (contacts.Contact, er
 	}
 	var contact contacts.Contact
 	err := s.pool.QueryRow(ctx, `
-		SELECT c.id::text, c.provider_contact_id, c.phone,
-		       `+contactDisplayNameSQL("c")+` AS display_name,
-		       c.push_name, c.profile_picture_url, c.created_at, c.updated_at
-		FROM contacts c WHERE c.id = $1`, id).Scan(
-		&contact.ID, &contact.ProviderContactID, &contact.Phone, &contact.Name,
-		&contact.PushName, &contact.ProfilePictureURL, &contact.CreatedAt, &contact.UpdatedAt,
-	)
+		SELECT `+contactSelectCols+`
+		FROM contacts c
+		LEFT JOIN companies co ON co.id = c.company_id
+		WHERE c.id = $1`, id).Scan(contactScanDest(&contact)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return contacts.Contact{}, ErrNotFound
 	}
@@ -89,6 +94,21 @@ func (s *Store) GetContact(ctx context.Context, id string) (contacts.Contact, er
 		return contacts.Contact{}, fmt.Errorf("get contact: %w", err)
 	}
 	return contact, nil
+}
+
+var contactSelectCols = `
+	c.id::text, c.provider_contact_id, c.phone,
+	` + contactDisplayNameSQL("c") + ` AS display_name,
+	c.push_name, c.profile_picture_url,
+	COALESCE(c.company_id::text, ''), COALESCE(co.name, ''),
+	c.created_at, c.updated_at`
+
+func contactScanDest(contact *contacts.Contact) []any {
+	return []any{
+		&contact.ID, &contact.ProviderContactID, &contact.Phone, &contact.Name,
+		&contact.PushName, &contact.ProfilePictureURL, &contact.CompanyID, &contact.CompanyName,
+		&contact.CreatedAt, &contact.UpdatedAt,
+	}
 }
 
 // contactDisplayNameSQL prefers saved names, then a human conversation title, never raw JIDs.

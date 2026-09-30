@@ -16,6 +16,7 @@ import (
 	"github.com/leofelipet/contexta/internal/activity"
 	"github.com/leofelipet/contexta/internal/admin"
 	"github.com/leofelipet/contexta/internal/auth"
+	"github.com/leofelipet/contexta/internal/companies"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
@@ -57,6 +58,13 @@ type Store interface {
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
 	RemoveDenylistEntry(context.Context, string) error
+	ListCompanies(context.Context, companies.ListParams) (companies.Page, error)
+	GetCompany(context.Context, string) (companies.Company, error)
+	CreateCompany(context.Context, companies.CreateParams) (companies.Company, error)
+	UpdateCompany(context.Context, string, companies.UpdateParams) (companies.Company, error)
+	DeleteCompany(context.Context, string) error
+	AttachContactToCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
+	DetachContactFromCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
 	GetTask(context.Context, string) (tasks.Task, error)
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
@@ -138,6 +146,13 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/denylist", handler.listDenylist)
 	api.HandleFunc("POST /api/v1/denylist", handler.addDenylistEntry)
 	api.HandleFunc("DELETE /api/v1/denylist/{id}", handler.removeDenylistEntry)
+	api.HandleFunc("GET /api/v1/companies", handler.listCompanies)
+	api.HandleFunc("POST /api/v1/companies", handler.createCompany)
+	api.HandleFunc("GET /api/v1/companies/{id}", handler.getCompany)
+	api.HandleFunc("PATCH /api/v1/companies/{id}", handler.updateCompany)
+	api.HandleFunc("DELETE /api/v1/companies/{id}", handler.deleteCompany)
+	api.HandleFunc("POST /api/v1/companies/{id}/contacts", handler.attachCompanyContact)
+	api.HandleFunc("DELETE /api/v1/companies/{id}/contacts/{contact_id}", handler.detachCompanyContact)
 	api.HandleFunc("GET /api/v1/tasks", handler.listTasks)
 	api.HandleFunc("GET /api/v1/tasks/{id}", handler.getTask)
 	api.HandleFunc("POST /api/v1/tasks", handler.createTask)
@@ -255,7 +270,8 @@ func (h *handler) uazapiWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listContacts(w http.ResponseWriter, r *http.Request) {
 	page, err := h.store.ListContacts(r.Context(), contacts.ListParams{
-		Query: r.URL.Query().Get("query"), Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
+		Query: r.URL.Query().Get("query"), CompanyID: r.URL.Query().Get("company_id"),
+		Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -510,6 +526,7 @@ func (h *handler) listTasks(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	page, err := h.store.ListTasks(r.Context(), tasks.ListParams{
 		Status:         query.Get("status"),
+		CompanyID:      query.Get("company_id"),
 		Company:        query.Get("company"),
 		ContactID:      query.Get("contact_id"),
 		ConversationID: query.Get("conversation_id"),
@@ -539,7 +556,7 @@ func (h *handler) getTask(w http.ResponseWriter, r *http.Request) {
 type createTaskRequest struct {
 	Title          string  `json:"title"`
 	Description    string  `json:"description"`
-	Company        string  `json:"company"`
+	CompanyID      string  `json:"company_id"`
 	Status         string  `json:"status"`
 	DueAt          *string `json:"due_at"`
 	ConversationID string  `json:"conversation_id"`
@@ -560,7 +577,7 @@ func (h *handler) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, err := h.store.CreateTask(r.Context(), tasks.CreateParams{
-		Title: request.Title, Description: request.Description, Company: request.Company,
+		Title: request.Title, Description: request.Description, CompanyID: request.CompanyID,
 		Status: request.Status, DueAt: dueAt,
 		ConversationID: request.ConversationID, ContactID: request.ContactID,
 	})
@@ -578,7 +595,7 @@ func (h *handler) createTask(w http.ResponseWriter, r *http.Request) {
 type updateTaskRequest struct {
 	Title          *string `json:"title"`
 	Description    *string `json:"description"`
-	Company        *string `json:"company"`
+	CompanyID      *string `json:"company_id"`
 	Status         *string `json:"status"`
 	DueAt          *string `json:"due_at"`
 	ConversationID *string `json:"conversation_id"`
@@ -596,7 +613,7 @@ func (h *handler) updateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, _, err := h.store.UpdateTask(r.Context(), id, tasks.UpdateParams{
-		Title: request.Title, Description: request.Description, Company: request.Company,
+		Title: request.Title, Description: request.Description, CompanyID: request.CompanyID,
 		Status: request.Status, DueAt: request.DueAt,
 		ConversationID: request.ConversationID, ContactID: request.ContactID,
 		DeleteMemories: request.DeleteMemories,
@@ -957,7 +974,7 @@ func (h *handler) handleStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, email.ErrMessageNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, email.ErrDisabled):
+	case errors.Is(err, email.ErrDisabled), errors.Is(err, postgres.ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, email.ErrProvider):
 		writeError(w, http.StatusBadGateway, err.Error())

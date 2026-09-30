@@ -21,9 +21,14 @@ const maxSchedulesPerTick = 500
 const maxDueInMinutes = 366 * 24 * 60
 
 const scheduleSelectCols = `
-	id::text, cron, timezone, enabled, skip_if_open, title, description, company, due_in_minutes,
-	COALESCE(conversation_id::text, ''), COALESCE(contact_id::text, ''),
-	next_run_at, last_run_at, COALESCE(last_task_id::text, ''), run_count, created_at, updated_at`
+	s.id::text, s.cron, s.timezone, s.enabled, s.skip_if_open, s.title, s.description,
+	COALESCE(s.company_id::text, ''), COALESCE(co.name, ''), s.due_in_minutes,
+	COALESCE(s.conversation_id::text, ''), COALESCE(s.contact_id::text, ''),
+	s.next_run_at, s.last_run_at, COALESCE(s.last_task_id::text, ''), s.run_count, s.created_at, s.updated_at`
+
+const scheduleFrom = `
+	FROM task_schedules s
+	LEFT JOIN companies co ON co.id = s.company_id`
 
 func (s *Store) ListTaskSchedules(ctx context.Context, params schedules.ListParams) (schedules.Page, error) {
 	limit := normalizeLimit(params.Limit, 50)
@@ -34,17 +39,25 @@ func (s *Store) ListTaskSchedules(ctx context.Context, params schedules.ListPara
 	if params.Cursor != "" && (cursor.Time.IsZero() || !isTaskID(cursor.ID)) {
 		return schedules.Page{}, pagination.ErrInvalidCursor
 	}
+	var companyID any
+	if params.CompanyID != "" {
+		parsed, err := parseTaskID(params.CompanyID)
+		if err != nil {
+			return schedules.Page{}, err
+		}
+		companyID = parsed
+	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+scheduleSelectCols+`
-		FROM task_schedules
-		WHERE ($1::timestamptz IS NULL OR (created_at, id) < ($1, $2::bigint))
-		  AND ($3::boolean IS NULL OR enabled = $3)
-		  AND ($4 = '' OR title ILIKE '%' || $4 || '%' OR description ILIKE '%' || $4 || '%' OR id::text = $4)
-		ORDER BY created_at DESC, id DESC
-		LIMIT $5`,
+		SELECT `+scheduleSelectCols+scheduleFrom+`
+		WHERE ($1::timestamptz IS NULL OR (s.created_at, s.id) < ($1, $2::bigint))
+		  AND ($3::boolean IS NULL OR s.enabled = $3)
+		  AND ($4 = '' OR s.title ILIKE '%' || $4 || '%' OR s.description ILIKE '%' || $4 || '%' OR s.id::text = $4)
+		  AND ($5::bigint IS NULL OR s.company_id = $5::bigint)
+		ORDER BY s.created_at DESC, s.id DESC
+		LIMIT $6`,
 		nullableTime(cursor.Time), nullableTaskID(cursor.ID), params.Enabled,
-		strings.TrimPrefix(strings.TrimSpace(params.Query), "#"), limit+1,
+		strings.TrimPrefix(strings.TrimSpace(params.Query), "#"), companyID, limit+1,
 	)
 	if err != nil {
 		return schedules.Page{}, fmt.Errorf("list task schedules: %w", err)
@@ -76,7 +89,7 @@ func (s *Store) GetTaskSchedule(ctx context.Context, id string) (schedules.Sched
 	if err != nil {
 		return schedules.Schedule{}, err
 	}
-	row := s.pool.QueryRow(ctx, `SELECT `+scheduleSelectCols+` FROM task_schedules WHERE id = $1`, scheduleID)
+	row := s.pool.QueryRow(ctx, `SELECT `+scheduleSelectCols+scheduleFrom+` WHERE s.id = $1`, scheduleID)
 	schedule, err := scanSchedule(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return schedules.Schedule{}, ErrNotFound
@@ -95,7 +108,7 @@ func (s *Store) CreateTaskSchedule(ctx context.Context, params schedules.CreateP
 	enabled := params.Enabled == nil || *params.Enabled
 	template := scheduleTemplate{
 		Cron: strings.TrimSpace(params.Cron), Timezone: timezone,
-		Title: params.Title, Description: params.Description, Company: params.Company,
+		Title: params.Title, Description: params.Description, CompanyID: params.CompanyID,
 		DueInMinutes: params.DueInMinutes, ConversationID: params.ConversationID, ContactID: params.ContactID,
 	}
 	if err := s.validateScheduleTemplate(ctx, &template); err != nil {
@@ -109,13 +122,13 @@ func (s *Store) CreateTaskSchedule(ctx context.Context, params schedules.CreateP
 	var id string
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO task_schedules (
-			cron, timezone, enabled, skip_if_open, title, description, company,
+			cron, timezone, enabled, skip_if_open, title, description, company_id,
 			due_in_minutes, conversation_id, contact_id, next_run_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10::uuid, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9::uuid, $10::uuid, $11)
 		RETURNING id::text`,
 		template.Cron, template.Timezone, enabled, params.SkipIfOpen,
-		template.Title, template.Description, template.Company, template.DueInMinutes,
+		template.Title, template.Description, nullableTaskID(template.CompanyID), template.DueInMinutes,
 		nullableUUID(template.ConversationID), nullableUUID(template.ContactID), nextRunAt,
 	).Scan(&id)
 	if err != nil {
@@ -136,7 +149,7 @@ func (s *Store) UpdateTaskSchedule(ctx context.Context, id string, params schedu
 
 	template := scheduleTemplate{
 		Cron: current.Cron, Timezone: current.Timezone,
-		Title: current.Title, Description: current.Description, Company: current.Company,
+		Title: current.Title, Description: current.Description, CompanyID: current.CompanyID,
 		DueInMinutes: current.DueInMinutes, ConversationID: current.ConversationID, ContactID: current.ContactID,
 	}
 	if params.Cron != nil {
@@ -154,8 +167,8 @@ func (s *Store) UpdateTaskSchedule(ctx context.Context, id string, params schedu
 	if params.Description != nil {
 		template.Description = *params.Description
 	}
-	if params.Company != nil {
-		template.Company = *params.Company
+	if params.CompanyID != nil {
+		template.CompanyID = *params.CompanyID
 	}
 	if params.DueInMinutes != nil {
 		template.DueInMinutes = params.DueInMinutes
@@ -198,12 +211,12 @@ func (s *Store) UpdateTaskSchedule(ctx context.Context, id string, params schedu
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE task_schedules SET
 			cron = $2, timezone = $3, enabled = $4, skip_if_open = $5,
-			title = $6, description = $7, company = $8, due_in_minutes = $9,
+			title = $6, description = $7, company_id = $8::bigint, due_in_minutes = $9,
 			conversation_id = $10::uuid, contact_id = $11::uuid, next_run_at = $12,
 			updated_at = now()
 		WHERE id = $1`,
 		scheduleID, template.Cron, template.Timezone, enabled, skipIfOpen,
-		template.Title, template.Description, template.Company, template.DueInMinutes,
+		template.Title, template.Description, nullableTaskID(template.CompanyID), template.DueInMinutes,
 		nullableUUID(template.ConversationID), nullableUUID(template.ContactID), nextRunAt,
 	)
 	if err != nil {
@@ -255,14 +268,14 @@ func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, result
 	defer tx.Rollback(ctx)
 
 	var (
-		id, taskID                                      int64
-		cronExpr, timezone, title, description, company string
-		conversationID, contactID, lastTaskStatus       string
-		skipIfOpen                                      bool
-		dueInMinutes                                    *int
+		id, taskID                                        int64
+		cronExpr, timezone, title, description, companyID string
+		conversationID, contactID, lastTaskStatus         string
+		skipIfOpen                                        bool
+		dueInMinutes                                      *int
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT s.id, s.cron, s.timezone, s.skip_if_open, s.title, s.description, s.company,
+		SELECT s.id, s.cron, s.timezone, s.skip_if_open, s.title, s.description, COALESCE(s.company_id::text, ''),
 		       s.due_in_minutes, COALESCE(s.conversation_id::text, ''), COALESCE(s.contact_id::text, ''),
 		       COALESCE((SELECT t.status FROM tasks t WHERE t.id = s.last_task_id), '')
 		FROM task_schedules s
@@ -270,7 +283,7 @@ func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, result
 		ORDER BY s.next_run_at, s.id
 		LIMIT 1
 		FOR UPDATE OF s SKIP LOCKED`, now,
-	).Scan(&id, &cronExpr, &timezone, &skipIfOpen, &title, &description, &company,
+	).Scan(&id, &cronExpr, &timezone, &skipIfOpen, &title, &description, &companyID,
 		&dueInMinutes, &conversationID, &contactID, &lastTaskStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -304,10 +317,10 @@ func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, result
 		dueAt = &value
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks (title, description, company, status, due_at, conversation_id, contact_id, schedule_id)
-		VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid, $8)
+		INSERT INTO tasks (title, description, company_id, status, due_at, conversation_id, contact_id, schedule_id)
+		VALUES ($1, $2, $3::bigint, $4, $5, $6::uuid, $7::uuid, $8)
 		RETURNING id`,
-		title, description, company, tasks.StatusPending, dueAt,
+		title, description, nullableTaskID(companyID), tasks.StatusPending, dueAt,
 		nullableUUID(conversationID), nullableUUID(contactID), id,
 	).Scan(&taskID)
 	if err != nil {
@@ -331,7 +344,7 @@ type scheduleTemplate struct {
 	Timezone       string
 	Title          string
 	Description    string
-	Company        string
+	CompanyID      string
 	DueInMinutes   *int
 	ConversationID string
 	ContactID      string
@@ -350,9 +363,11 @@ func (s *Store) validateScheduleTemplate(ctx context.Context, template *schedule
 	if len(template.Description) > 10000 {
 		return ErrInvalidArgument
 	}
-	template.Company = strings.TrimSpace(template.Company)
-	if len(template.Company) > 200 {
-		return ErrInvalidArgument
+	template.CompanyID = strings.TrimSpace(template.CompanyID)
+	if template.CompanyID != "" {
+		if _, err := s.requireCompany(ctx, template.CompanyID); err != nil {
+			return err
+		}
 	}
 	if template.DueInMinutes != nil && (*template.DueInMinutes < 1 || *template.DueInMinutes > maxDueInMinutes) {
 		return ErrInvalidArgument
@@ -401,7 +416,7 @@ func scanSchedule(row taskScanner) (schedules.Schedule, error) {
 	var schedule schedules.Schedule
 	if err := row.Scan(
 		&schedule.ID, &schedule.Cron, &schedule.Timezone, &schedule.Enabled, &schedule.SkipIfOpen,
-		&schedule.Title, &schedule.Description, &schedule.Company, &schedule.DueInMinutes,
+		&schedule.Title, &schedule.Description, &schedule.CompanyID, &schedule.CompanyName, &schedule.DueInMinutes,
 		&schedule.ConversationID, &schedule.ContactID,
 		&schedule.NextRunAt, &schedule.LastRunAt, &schedule.LastTaskID, &schedule.RunCount,
 		&schedule.CreatedAt, &schedule.UpdatedAt,
