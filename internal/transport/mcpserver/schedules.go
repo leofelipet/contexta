@@ -21,9 +21,9 @@ func (s *server) addScheduleTools(mcpServer *mcp.Server) {
 type listTaskSchedulesInput struct {
 	Enabled   *bool  `json:"enabled,omitempty" jsonschema:"When set, only return enabled (true) or paused (false) schedules."`
 	CompanyID string `json:"company_id,omitempty" jsonschema:"Only return schedules linked to this numeric company ID."`
-	Query   string `json:"query,omitempty" jsonschema:"Text matched against title and description, or an exact numeric schedule ID."`
-	Limit   int    `json:"limit,omitempty" jsonschema:"Maximum number of schedules, up to 100."`
-	Cursor  string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
+	Query     string `json:"query,omitempty" jsonschema:"Text matched against title and description, or an exact numeric schedule ID."`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum number of schedules, up to 100."`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by the previous call."`
 }
 
 type taskSchedulesOutput struct {
