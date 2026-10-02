@@ -106,6 +106,25 @@ The task scheduler turns cron schedules into tasks. A background worker ticks ev
 - Each schedule is claimed with `FOR UPDATE SKIP LOCKED`, so multiple replicas never create duplicates. Set `SCHEDULER_ENABLED=false` to stop the worker on a replica.
 - Deleting a schedule keeps the tasks it already created.
 
+## Bulk actions
+
+Bulk endpoints take a JSON body with `ids` (1 to 100 IDs; duplicates are merged and IDs that no longer exist are ignored) and return `count`, the number of rows touched. Each call runs in one transaction.
+
+| Endpoint | Body | MCP tool |
+|----------|------|----------|
+| `POST /api/v1/tasks/bulk-delete` | `ids`, `delete_memories` | `delete_tasks` |
+| `POST /api/v1/tasks/bulk-update` | `ids`, `status`, `delete_memories` | `update_tasks_status` |
+| `POST /api/v1/memories/bulk-delete` | `ids` | `delete_memories` |
+| `POST /api/v1/task-schedules/bulk-delete` | `ids` | `delete_task_schedules` |
+| `POST /api/v1/task-schedules/bulk-update` | `ids`, `enabled` | `set_task_schedules_enabled` |
+| `POST /api/v1/companies/bulk-delete` | `ids` | `delete_companies` |
+| `POST /api/v1/denylist/bulk-delete` | `ids` | `remove_denylist_entries` |
+| `POST /api/v1/conversations/bulk-delete` | `ids` | — |
+
+- Task status changes follow `update_task`: moving a task to `done` sets `due_at` to now, and `delete_memories=true` requires `done` or `cancelled`. With `delete_memories`, memories linked only to tasks in the batch are deleted; the response lists them in `deleted_memory_ids` and the ones kept because a task outside the batch links them in `kept_memory_ids`.
+- Resuming a schedule computes a fresh `next_run_at`; pausing clears it.
+- Conversations have no MCP bulk tool, as agents cannot delete conversations.
+
 ## Endpoints
 
 Health checks:
@@ -139,6 +158,7 @@ GET /api/v1/integrations/uazapi
 POST /api/v1/integrations/uazapi/configure-webhook
 GET /api/v1/companies
 POST /api/v1/companies
+POST /api/v1/companies/bulk-delete
 GET /api/v1/companies/{id}
 PATCH /api/v1/companies/{id}
 DELETE /api/v1/companies/{id}
@@ -152,6 +172,8 @@ DELETE /api/v1/email-accounts/{id}
 POST /api/v1/email-accounts/{id}/test
 GET /api/v1/task-schedules
 POST /api/v1/task-schedules
+POST /api/v1/task-schedules/bulk-delete
+POST /api/v1/task-schedules/bulk-update
 GET /api/v1/task-schedules/{id}
 PATCH /api/v1/task-schedules/{id}
 DELETE /api/v1/task-schedules/{id}
@@ -185,6 +207,7 @@ get_company
 create_company
 update_company
 delete_company
+delete_companies
 attach_contact_to_company
 detach_contact_from_company
 list_task_schedules
@@ -192,6 +215,12 @@ get_task_schedule
 create_task_schedule
 update_task_schedule
 delete_task_schedule
+delete_task_schedules
+set_task_schedules_enabled
+delete_tasks
+update_tasks_status
+delete_memories
+remove_denylist_entries
 ```
 
 Email tools, registered when the email service is available:

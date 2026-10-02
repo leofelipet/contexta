@@ -56,6 +56,9 @@ func (fakeStore) AddDenylistEntry(context.Context, denylist.AddParams) (denylist
 	return denylist.Entry{ID: "denylist-1", TargetType: denylist.TargetConversation}, nil
 }
 func (fakeStore) RemoveDenylistEntry(context.Context, string) error { return nil }
+func (fakeStore) RemoveDenylistEntries(_ context.Context, ids []string) (int, error) {
+	return len(ids), nil
+}
 func (fakeStore) ListCompanies(context.Context, companies.ListParams) (companies.Page, error) {
 	return companies.Page{Companies: []companies.Company{}}, nil
 }
@@ -69,6 +72,9 @@ func (fakeStore) UpdateCompany(_ context.Context, id string, _ companies.UpdateP
 	return companies.Company{ID: id, Name: "ACME"}, nil
 }
 func (fakeStore) DeleteCompany(context.Context, string) error { return nil }
+func (fakeStore) DeleteCompanies(_ context.Context, ids []string) (int, error) {
+	return len(ids), nil
+}
 func (fakeStore) AttachContactToCompany(_ context.Context, companyID, _ string) (companies.Company, error) {
 	return companies.Company{ID: companyID, Name: "ACME", ContactCount: 1}, nil
 }
@@ -89,6 +95,12 @@ func (fakeStore) UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.
 }
 func (fakeStore) DeleteTask(context.Context, string, bool) (tasks.DeleteResult, error) {
 	return tasks.DeleteResult{Deleted: true}, nil
+}
+func (fakeStore) DeleteTasks(_ context.Context, ids []string, _ bool) (tasks.BulkResult, error) {
+	return tasks.BulkResult{Count: len(ids)}, nil
+}
+func (fakeStore) UpdateTasksStatus(_ context.Context, ids []string, _ string, _ bool) (tasks.BulkResult, error) {
+	return tasks.BulkResult{Count: len(ids)}, nil
 }
 func (fakeStore) AttachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {
 	return tasks.Task{ID: taskID, Title: "Sample", Memories: []tasks.MemoryRef{{ID: "00000000-0000-0000-0000-000000000020", Title: "Note"}}}, nil
@@ -112,6 +124,12 @@ func (fakeStore) UpdateTaskSchedule(_ context.Context, id string, _ schedules.Up
 	return schedules.Schedule{ID: id, Cron: "0 9 * * 1-5", Timezone: schedules.DefaultTimezone, Title: "Daily"}, nil
 }
 func (fakeStore) DeleteTaskSchedule(context.Context, string) error { return nil }
+func (fakeStore) DeleteTaskSchedules(_ context.Context, ids []string) (int, error) {
+	return len(ids), nil
+}
+func (fakeStore) SetTaskSchedulesEnabled(_ context.Context, ids []string, _ bool) (int, error) {
+	return len(ids), nil
+}
 
 type fakeMemoryStore struct{}
 
@@ -131,6 +149,9 @@ func (fakeMemoryStore) UpdateMemory(_ context.Context, id string, _ memories.Upd
 	return memories.Memory{ID: id, Title: "Updated", Content: "hello", Source: memories.SourceNote, EmbeddingStatus: memories.EmbeddingReady}, nil
 }
 func (fakeMemoryStore) DeleteMemory(context.Context, string) error { return nil }
+func (fakeMemoryStore) DeleteMemories(_ context.Context, ids []string) (int, error) {
+	return len(ids), nil
+}
 func (fakeMemoryStore) SearchMemories(context.Context, memories.SearchParams, []float32) (memories.SearchResult, error) {
 	return memories.SearchResult{}, nil
 }
@@ -175,8 +196,8 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 37 {
-		t.Fatalf("tools = %d, want 37 (without email service)", len(tools.Tools))
+	if len(tools.Tools) != 44 {
+		t.Fatalf("tools = %d, want 44 (without email service)", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages":        true,
@@ -198,6 +219,13 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 		"delete_company":              true,
 		"attach_contact_to_company":   true,
 		"detach_contact_from_company": true,
+		"delete_tasks":                true,
+		"update_tasks_status":         true,
+		"delete_memories":             true,
+		"delete_task_schedules":       true,
+		"set_task_schedules_enabled":  true,
+		"delete_companies":            true,
+		"remove_denylist_entries":     true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {
@@ -262,6 +290,20 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	}
 
 	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "update_tasks_status", Arguments: map[string]any{"ids": []string{"1", "2"}, "status": "done"},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("update_tasks_status result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "delete_memories", Arguments: map[string]any{"ids": []string{"00000000-0000-0000-0000-000000000020"}},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("delete_memories result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "create_task_schedule", Arguments: map[string]any{"cron": "0 9 * * 1-5", "title": "Revisar caixa de entrada"},
 	})
 	if err != nil || result.IsError || result.StructuredContent == nil {
@@ -318,8 +360,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 46 {
-		t.Fatalf("tools = %d, want 46 with email", len(tools.Tools))
+	if len(tools.Tools) != 53 {
+		t.Fatalf("tools = %d, want 53 with email", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {

@@ -355,7 +355,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, params tasks.UpdatePa
 	}
 	if params.DeleteMemories {
 		// Kept memories stay linked: the task still exists and they remain useful context.
-		cleanup, err = deleteExclusiveTaskMemories(ctx, tx, taskID)
+		cleanup, err = deleteExclusiveTaskMemories(ctx, tx, []int64{taskID})
 		if err != nil {
 			return tasks.Task{}, tasks.MemoryCleanup{}, err
 		}
@@ -382,7 +382,7 @@ func (s *Store) DeleteTask(ctx context.Context, id string, deleteMemories bool) 
 	var cleanup tasks.MemoryCleanup
 	if deleteMemories {
 		// Runs before the task delete so the links are still there to inspect.
-		cleanup, err = deleteExclusiveTaskMemories(ctx, tx, taskID)
+		cleanup, err = deleteExclusiveTaskMemories(ctx, tx, []int64{taskID})
 		if err != nil {
 			return tasks.DeleteResult{}, err
 		}
@@ -401,18 +401,17 @@ func (s *Store) DeleteTask(ctx context.Context, id string, deleteMemories bool) 
 	return tasks.DeleteResult{Deleted: true, MemoryCleanup: cleanup}, nil
 }
 
-// deleteExclusiveTaskMemories deletes memories linked only to taskID and
-// reports the ones kept because another task also links them.
-func deleteExclusiveTaskMemories(ctx context.Context, tx pgx.Tx, taskID int64) (tasks.MemoryCleanup, error) {
+// deleteExclusiveTaskMemories deletes memories linked only to tasks in taskIDs
+// and reports the ones kept because a task outside the set also links them.
+func deleteExclusiveTaskMemories(ctx context.Context, tx pgx.Tx, taskIDs []int64) (tasks.MemoryCleanup, error) {
 	// Lock the linked memories first so a concurrent attach to another task
 	// (whose FK check needs a share lock on the memory row) waits for us.
 	if _, err := tx.Exec(ctx, `
 		SELECT m.id
 		FROM memories m
-		JOIN task_memories tm ON tm.memory_id = m.id
-		WHERE tm.task_id = $1
+		WHERE m.id IN (SELECT memory_id FROM task_memories WHERE task_id = ANY($1::bigint[]))
 		ORDER BY m.id
-		FOR UPDATE OF m`, taskID); err != nil {
+		FOR UPDATE OF m`, taskIDs); err != nil {
 		return tasks.MemoryCleanup{}, fmt.Errorf("lock task memories: %w", err)
 	}
 
@@ -420,11 +419,12 @@ func deleteExclusiveTaskMemories(ctx context.Context, tx pgx.Tx, taskID int64) (
 		SELECT tm.memory_id::text,
 		       EXISTS (
 		           SELECT 1 FROM task_memories other
-		           WHERE other.memory_id = tm.memory_id AND other.task_id <> tm.task_id
+		           WHERE other.memory_id = tm.memory_id AND other.task_id <> ALL($1::bigint[])
 		       )
 		FROM task_memories tm
-		WHERE tm.task_id = $1
-		ORDER BY tm.created_at DESC, tm.memory_id DESC`, taskID)
+		WHERE tm.task_id = ANY($1::bigint[])
+		GROUP BY tm.memory_id
+		ORDER BY max(tm.created_at) DESC, tm.memory_id DESC`, taskIDs)
 	if err != nil {
 		return tasks.MemoryCleanup{}, fmt.Errorf("list task memory links: %w", err)
 	}

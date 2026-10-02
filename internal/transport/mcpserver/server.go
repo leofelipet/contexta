@@ -36,11 +36,13 @@ type Store interface {
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
 	RemoveDenylistEntry(context.Context, string) error
+	RemoveDenylistEntries(context.Context, []string) (int, error)
 	ListCompanies(context.Context, companies.ListParams) (companies.Page, error)
 	GetCompany(context.Context, string) (companies.Company, error)
 	CreateCompany(context.Context, companies.CreateParams) (companies.Company, error)
 	UpdateCompany(context.Context, string, companies.UpdateParams) (companies.Company, error)
 	DeleteCompany(context.Context, string) error
+	DeleteCompanies(context.Context, []string) (int, error)
 	AttachContactToCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
 	DetachContactFromCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
@@ -48,6 +50,8 @@ type Store interface {
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
 	UpdateTask(context.Context, string, tasks.UpdateParams) (tasks.Task, tasks.MemoryCleanup, error)
 	DeleteTask(ctx context.Context, id string, deleteMemories bool) (tasks.DeleteResult, error)
+	DeleteTasks(ctx context.Context, ids []string, deleteMemories bool) (tasks.BulkResult, error)
+	UpdateTasksStatus(ctx context.Context, ids []string, status string, deleteMemories bool) (tasks.BulkResult, error)
 	AttachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	DetachTaskMemory(ctx context.Context, taskID, memoryID string) (tasks.Task, error)
 	ListTaskSchedules(context.Context, schedules.ListParams) (schedules.Page, error)
@@ -55,6 +59,8 @@ type Store interface {
 	CreateTaskSchedule(context.Context, schedules.CreateParams) (schedules.Schedule, error)
 	UpdateTaskSchedule(context.Context, string, schedules.UpdateParams) (schedules.Schedule, error)
 	DeleteTaskSchedule(context.Context, string) error
+	DeleteTaskSchedules(context.Context, []string) (int, error)
+	SetTaskSchedulesEnabled(ctx context.Context, ids []string, enabled bool) (int, error)
 	RecordActivity(context.Context, activity.Record) error
 }
 
@@ -103,6 +109,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
 	s.addCompanyTools(mcpServer)
 	s.addScheduleTools(mcpServer)
+	s.addBulkTools(mcpServer)
 	s.addEmailTools(mcpServer)
 }
 

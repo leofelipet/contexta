@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/leofelipet/contexta/internal/conversations"
@@ -188,27 +187,9 @@ func (s *Store) DeleteConversation(ctx context.Context, id string) (conversation
 }
 
 func (s *Store) DeleteConversations(ctx context.Context, ids []string) (conversations.BulkDeleteResult, error) {
-	cleaned := make([]string, 0, len(ids))
-	seen := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if !isUUID(id) {
-			return conversations.BulkDeleteResult{}, ErrInvalidArgument
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		cleaned = append(cleaned, id)
-	}
-	if len(cleaned) == 0 {
-		return conversations.BulkDeleteResult{}, ErrInvalidArgument
-	}
-	if len(cleaned) > 100 {
-		return conversations.BulkDeleteResult{}, ErrInvalidArgument
+	cleaned, err := cleanBulkUUIDs(ids)
+	if err != nil {
+		return conversations.BulkDeleteResult{}, err
 	}
 
 	tx, err := s.pool.Begin(ctx)

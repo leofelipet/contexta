@@ -21,6 +21,7 @@ type Store interface {
 	CreateMemory(ctx context.Context, params CreateParams, embedding []float32, model string, embedErr error) (Memory, error)
 	UpdateMemory(ctx context.Context, id string, params UpdateParams, embedding []float32, model string, embedErr error, contentChanged bool) (Memory, error)
 	DeleteMemory(context.Context, string) error
+	DeleteMemories(context.Context, []string) (int, error)
 	SearchMemories(ctx context.Context, params SearchParams, queryEmbedding []float32) (SearchResult, error)
 }
 
@@ -43,6 +44,11 @@ func (s *Service) Get(ctx context.Context, id string) (Memory, error) {
 
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.store.DeleteMemory(ctx, id)
+}
+
+// DeleteMany deletes up to 100 memories and returns how many existed.
+func (s *Service) DeleteMany(ctx context.Context, ids []string) (int, error) {
+	return s.store.DeleteMemories(ctx, ids)
 }
 
 func (s *Service) Create(ctx context.Context, params CreateParams) (Memory, error) {

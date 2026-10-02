@@ -103,3 +103,10 @@ type Page struct {
 	Tasks      []Task
 	NextCursor string
 }
+
+// BulkResult reports how many tasks a bulk delete or status change touched and
+// which linked memories it deleted or kept.
+type BulkResult struct {
+	Count int `json:"count"`
+	MemoryCleanup
+}
