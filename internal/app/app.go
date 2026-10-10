@@ -20,6 +20,7 @@ import (
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/providers/transcription/groq"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/realtime"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/transcription"
@@ -104,6 +105,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
 		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
+		Realtime: realtime.NewHub(),
 	})
 
 	root := http.NewServeMux()
@@ -117,7 +119,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		Handler:           root,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      0, // SSE /api/v1/events stays open
 		IdleTimeout:       60 * time.Second,
 	}
 

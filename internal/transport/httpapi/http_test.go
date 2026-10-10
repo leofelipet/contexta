@@ -58,4 +58,11 @@ func TestAuthenticationAndMalformedWebhook(t *testing.T) {
 	if strings.Contains(logs.String(), secret) {
 		t.Fatal("webhook secret appeared in logs")
 	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("events auth status = %d", response.Code)
+	}
 }

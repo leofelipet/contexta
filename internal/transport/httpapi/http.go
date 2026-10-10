@@ -27,6 +27,7 @@ import (
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/passkeys"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/realtime"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
@@ -111,6 +112,7 @@ type Options struct {
 	MCPEnabled         bool
 	StartedAt          time.Time
 	Logger             *slog.Logger
+	Realtime           *realtime.Hub
 }
 
 func New(options Options) http.Handler {
@@ -131,6 +133,7 @@ func New(options Options) http.Handler {
 		mcpEnabled:         options.MCPEnabled,
 		startedAt:          startedAt,
 		logger:             options.Logger,
+		realtime:           options.Realtime,
 	}
 
 	root := http.NewServeMux()
@@ -199,6 +202,7 @@ func New(options Options) http.Handler {
 	api.HandleFunc("POST /api/v1/email-accounts/{id}/test", handler.testEmailAccount)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
 	api.HandleFunc("GET /api/v1/activity", handler.listActivity)
+	api.HandleFunc("GET /api/v1/events", handler.events)
 	api.HandleFunc("GET /api/v1/admin-passkeys", handler.listAdminPasskeys)
 	api.HandleFunc("POST /api/v1/admin-passkeys", handler.createAdminPasskey)
 	api.HandleFunc("PATCH /api/v1/admin-passkeys/{id}", handler.updateAdminPasskey)
@@ -221,6 +225,7 @@ type handler struct {
 	mcpEnabled         bool
 	startedAt          time.Time
 	logger             *slog.Logger
+	realtime           *realtime.Hub
 }
 
 func (h *handler) live(w http.ResponseWriter, _ *http.Request) {
@@ -287,7 +292,51 @@ func (h *handler) uazapiWebhook(w http.ResponseWriter, r *http.Request) {
 		"processed", result.Processed, "created", result.Created, "updated", result.Updated)
 	metadata, _ := json.Marshal(map[string]int{"processed": result.Processed, "created": result.Created, "updated": result.Updated})
 	h.recordActivity(r.Context(), activity.Record{Category: "webhook", Level: "info", Operation: "webhook_processed", Outcome: "success", Metadata: metadata})
+	if h.realtime != nil && (result.Created > 0 || result.Updated > 0) {
+		h.realtime.Publish()
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) events(w http.ResponseWriter, r *http.Request) {
+	if h.realtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "realtime unavailable")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	updates, cancel := h.realtime.Subscribe()
+	defer cancel()
+	if _, err := fmt.Fprint(w, "event: ping\ndata: {}\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-updates:
+			if _, err := fmt.Fprint(w, "event: messages\ndata: {}\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-ticker.C:
+			if _, err := fmt.Fprint(w, "event: ping\ndata: {}\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func (h *handler) listContacts(w http.ResponseWriter, r *http.Request) {
