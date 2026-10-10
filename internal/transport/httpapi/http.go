@@ -25,6 +25,7 @@ import (
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/passkeys"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
@@ -84,6 +85,10 @@ type Store interface {
 	DeleteTaskSchedules(context.Context, []string) (int, error)
 	SetTaskSchedulesEnabled(ctx context.Context, ids []string, enabled bool) (int, error)
 	SystemOverview(context.Context) (admin.SystemOverview, error)
+	ListAdminPasskeys(context.Context) ([]passkeys.Passkey, error)
+	CreateAdminPasskey(context.Context, passkeys.CreateParams) (passkeys.Passkey, error)
+	UpdateAdminPasskeyCounter(context.Context, string, int64) (passkeys.Passkey, error)
+	DeleteAdminPasskey(context.Context, string) error
 }
 
 type UAZAPIClient interface {
@@ -194,6 +199,10 @@ func New(options Options) http.Handler {
 	api.HandleFunc("POST /api/v1/email-accounts/{id}/test", handler.testEmailAccount)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
 	api.HandleFunc("GET /api/v1/activity", handler.listActivity)
+	api.HandleFunc("GET /api/v1/admin-passkeys", handler.listAdminPasskeys)
+	api.HandleFunc("POST /api/v1/admin-passkeys", handler.createAdminPasskey)
+	api.HandleFunc("PATCH /api/v1/admin-passkeys/{id}", handler.updateAdminPasskey)
+	api.HandleFunc("DELETE /api/v1/admin-passkeys/{id}", handler.deleteAdminPasskey)
 	root.Handle("/api/v1/", auth.NewMiddleware(options.APIToken).Wrap(api))
 
 	return accessLog(options.Logger, recoverPanic(options.Logger, root))
