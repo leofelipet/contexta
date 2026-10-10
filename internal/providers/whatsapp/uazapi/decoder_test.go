@@ -92,6 +92,19 @@ func TestDecodeDirectConversationUsesPushNameInsteadOfLID(t *testing.T) {
 	}
 }
 
+func TestContactFromChatIgnoresPhoneStoredAsName(t *testing.T) {
+	t.Parallel()
+	contact := contactFromChat(map[string]any{
+		"wa_chatid": "5514999999999@s.whatsapp.net",
+		"name":      "5514999999999",
+		"wa_name":   "Talita",
+		"phone":     "5514999999999",
+	}, "")
+	if contact.Name != "" || contact.PushName != "Talita" || contact.Phone != "5514999999999" {
+		t.Fatalf("contact = %#v", contact)
+	}
+}
+
 func TestDecodePartialUpdate(t *testing.T) {
 	t.Parallel()
 	event, err := DecodeEvent([]byte(`{

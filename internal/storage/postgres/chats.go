@@ -36,14 +36,8 @@ func (s *Store) SyncChats(ctx context.Context, providerInstanceID string, profil
 		if profile.Group {
 			continue
 		}
-		contactName := firstNonEmptyString(profile.ContactName, profile.Name)
-		pushName := profile.PushName
-		if isWhatsAppIdentifier(contactName) {
-			contactName = ""
-		}
-		if isWhatsAppIdentifier(pushName) {
-			pushName = ""
-		}
+		contactName := firstHumanName(profile.Phone, profile.ContactName, profile.Name)
+		pushName := firstHumanName(profile.Phone, profile.PushName)
 		if contactName == "" && pushName == "" && profile.Phone == "" {
 			continue
 		}
@@ -84,17 +78,35 @@ func (s *Store) SyncChats(ctx context.Context, providerInstanceID string, profil
 }
 
 func chatTitle(profile chats.Profile) string {
-	values := []string{profile.ContactName, profile.Name, profile.PushName, profile.Phone}
+	values := []string{profile.ContactName, profile.Name, profile.PushName}
 	if profile.Group {
 		values = []string{profile.Name, profile.PushName}
 	}
+	if title := firstHumanName(profile.Phone, values...); title != "" {
+		return title
+	}
+	if profile.Group {
+		return ""
+	}
+	return strings.TrimSpace(profile.Phone)
+}
+
+func firstHumanName(phone string, values ...string) string {
+	phone = strings.TrimSpace(phone)
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if value != "" && !isWhatsAppIdentifier(value) {
+		if isHumanDisplayName(value, phone) {
 			return value
 		}
 	}
 	return ""
+}
+
+func isHumanDisplayName(value, phone string) bool {
+	if value == "" || value == phone || isWhatsAppIdentifier(value) {
+		return false
+	}
+	return !isNumericPhone(value)
 }
 
 func isWhatsAppIdentifier(value string) bool {
@@ -106,11 +118,15 @@ func isWhatsAppIdentifier(value string) bool {
 	return false
 }
 
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
+func isNumericPhone(value string) bool {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "+")
+	if len(value) < 8 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
-	return ""
+	return true
 }

@@ -190,7 +190,7 @@ func contactFromMessage(raw map[string]any) *ingestion.Contact {
 	if providerID == "" {
 		return nil
 	}
-	contact := contactFromJID(providerID, firstString(raw, "senderName", "pushName"))
+	contact := contactFromJID(providerID, firstString(raw, "senderName", "sender_name", "pushName", "push_name", "notifyName", "wa_name"))
 	for kind, value := range map[string]string{"pn": pn, "lid": lid, "jid": sender} {
 		if value != "" {
 			contact.Identities = append(contact.Identities, ingestion.Identity{Kind: kind, Value: value})
@@ -204,6 +204,7 @@ func contactFromJID(jid, name string) ingestion.Contact {
 	if strings.HasSuffix(jid, "@s.whatsapp.net") {
 		phone = strings.TrimSuffix(jid, "@s.whatsapp.net")
 	}
+	name = humanDisplayName(name, phone)
 	return ingestion.Contact{
 		ProviderID: jid,
 		Identities: []ingestion.Identity{{Kind: "jid", Value: jid}},
@@ -221,8 +222,8 @@ func contactFromChat(chat map[string]any, fallbackID string) ingestion.Contact {
 	if phone == "" && strings.HasSuffix(jid, "@s.whatsapp.net") {
 		phone = strings.TrimSuffix(jid, "@s.whatsapp.net")
 	}
-	name := firstString(chat, "wa_contactName", "lead_fullName", "lead_name", "name")
-	pushName := firstString(chat, "wa_name")
+	name := humanDisplayName(firstString(chat, "wa_contactName", "lead_fullName", "lead_name", "name"), phone)
+	pushName := humanDisplayName(firstString(chat, "wa_name"), phone)
 	identities := make([]ingestion.Identity, 0, 2)
 	if jid != "" {
 		identities = append(identities, ingestion.Identity{Kind: "jid", Value: jid})
@@ -289,13 +290,43 @@ func normalizeMessageType(value string) string {
 }
 
 func firstDisplayValue(values ...string) string {
+	fallback := ""
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if value != "" && !isWhatsAppID(value) {
-			return value
+		if value == "" || isWhatsAppID(value) {
+			continue
+		}
+		if isNumericPhone(value) {
+			if fallback == "" {
+				fallback = value
+			}
+			continue
+		}
+		return value
+	}
+	return fallback
+}
+
+func humanDisplayName(value, phone string) string {
+	value = strings.TrimSpace(value)
+	phone = strings.TrimSpace(phone)
+	if value == "" || value == phone || isWhatsAppID(value) || isNumericPhone(value) {
+		return ""
+	}
+	return value
+}
+
+func isNumericPhone(value string) bool {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "+")
+	if len(value) < 8 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
-	return ""
+	return true
 }
 
 func isWhatsAppID(value string) bool {

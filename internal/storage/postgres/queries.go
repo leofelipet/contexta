@@ -111,23 +111,32 @@ func contactScanDest(contact *contacts.Contact) []any {
 	}
 }
 
-// contactDisplayNameSQL prefers saved names, then a human conversation title, never raw JIDs.
+// contactDisplayNameSQL prefers a human name, then a conversation title. Phone
+// numbers and WhatsApp JIDs are skipped so a stored phone does not hide push_name.
 func contactDisplayNameSQL(alias string) string {
 	return `COALESCE(
-		NULLIF(` + alias + `.name, ''),
-		NULLIF(` + alias + `.push_name, ''),
-		NULLIF((
+		` + humanNameSQL(alias+".name", alias+".phone") + `,
+		` + humanNameSQL(alias+".push_name", alias+".phone") + `,
+		(
 			SELECT conv.title
 			FROM conversations conv
 			WHERE conv.contact_id = ` + alias + `.id
-			  AND conv.title <> ''
-			  AND conv.title IS DISTINCT FROM ` + alias + `.phone
-			  AND conv.title NOT LIKE '%@%'
+			  AND ` + humanNameSQL("conv.title", alias+".phone") + ` IS NOT NULL
 			ORDER BY conv.last_message_at DESC NULLS LAST
 			LIMIT 1
-		), ''),
+		),
 		''
 	)`
+}
+
+func humanNameSQL(expr, phoneExpr string) string {
+	return `CASE
+		WHEN NULLIF(btrim(` + expr + `), '') IS NULL THEN NULL
+		WHEN btrim(` + expr + `) IS NOT DISTINCT FROM btrim(COALESCE(` + phoneExpr + `, '')) THEN NULL
+		WHEN ` + expr + ` LIKE '%@%' THEN NULL
+		WHEN btrim(` + expr + `) ~ '^\+?[0-9]{8,}$' THEN NULL
+		ELSE btrim(` + expr + `)
+	END`
 }
 
 func (s *Store) ListConversations(ctx context.Context, params conversations.ListParams) (conversations.Page, error) {
