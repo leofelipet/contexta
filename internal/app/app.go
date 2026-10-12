@@ -20,6 +20,7 @@ import (
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/providers/transcription/groq"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/realtime"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
@@ -90,6 +91,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 	embedder := embeddings.NewOpenRouter(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL, cfg.OpenRouter.EmbeddingModel)
 	memoriesService := memories.NewService(store, embedder)
 	emailService := email.NewService(store, cfg.EmailCredentialsKey, nil, nil)
+	pushoverService := pushover.NewService(store, cfg.EmailCredentialsKey, nil)
 	uazapiClient := uazapi.NewClient(cfg.UAZAPI.BaseURL, cfg.UAZAPI.Token)
 	go syncChats(ctx, store, uazapiClient, cfg.UAZAPI.InstanceID, logger)
 	if cfg.Transcription.Enabled {
@@ -101,7 +103,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		go schedules.NewWorker(store, logger).Run(ctx)
 	}
 	apiHandler := httpapi.New(httpapi.Options{
-		Store: store, Memories: memoriesService, Email: emailService, Ingestion: ingestionService, APIToken: cfg.APIToken,
+		Store: store, Memories: memoriesService, Email: emailService, Pushover: pushoverService, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
 		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
@@ -110,7 +112,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 
 	root := http.NewServeMux()
 	if cfg.MCPEnabled {
-		root.Handle("/mcp", mcpserver.New(store, memoriesService, emailService, cfg.MCPToken, logger))
+		root.Handle("/mcp", mcpserver.New(store, memoriesService, emailService, pushoverService, cfg.MCPToken, logger))
 	}
 	root.Handle("/", apiHandler)
 

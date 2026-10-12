@@ -88,6 +88,10 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 `get_email` never marks messages as read; agents call `mark_email_read` explicitly. `delete_email` moves mail to the Trash folder. When the message is already in Trash, or the account has no Trash folder, it permanently expunges only that message and refuses when the server lacks UIDPLUS.
 
+## Pushover
+
+Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `1`), and optional URL. Emergency priority (`2`) is not supported because it requires a receipt/retry workflow.
+
 ## Companies
 
 Companies group tasks, recurring schedules, and WhatsApp contacts. A company has a unique name (case-insensitive) and free-text notes; each task, schedule, and contact links to at most one company through `company_id`.
@@ -158,6 +162,9 @@ GET /api/v1/messages/{id}/around
 GET /api/v1/dashboard
 GET /api/v1/integrations/uazapi
 POST /api/v1/integrations/uazapi/configure-webhook
+GET /api/v1/integrations/pushover
+PATCH /api/v1/integrations/pushover
+POST /api/v1/integrations/pushover/send
 GET /api/v1/companies
 POST /api/v1/companies
 POST /api/v1/companies/bulk-delete
@@ -237,6 +244,7 @@ set_email_flags
 move_email
 delete_email
 send_email
+send_pushover_notification
 ```
 
 Message read state is tracked independently for each agent `consumer_id`. Use `list_unread_messages` to fetch pending work without changing state, then call `acknowledge_messages` only after processing succeeds. `search_messages` accepts optional `consumer_id` and `read_state` (`all`, `read`, or `unread`) filters. Existing search and conversation tools always remain available for historical access.
@@ -259,6 +267,7 @@ Captured files still contain private conversation data. Keep capture mode disabl
 - Downloaded audio is size-limited, kept in memory only for processing, and is not persisted by Contexta.
 - MCP WhatsApp data is read-only. The only WhatsApp state-changing tool writes idempotent, per-agent local read receipts and cannot alter WhatsApp content.
 - Email passwords are encrypted at rest, never returned by the API or MCP, and never logged. `send_email` and `delete_email` are annotated as destructive so MCP clients can require confirmation.
+- Pushover credentials are encrypted at rest, never returned by the API or MCP, and never logged. `send_pushover_notification` is destructive so MCP clients can require confirmation.
 - Operational activity excludes message bodies, payloads, authentication headers, and secrets.
 
 Run checks with:

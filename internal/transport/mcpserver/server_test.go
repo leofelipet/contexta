@@ -16,6 +16,7 @@ import (
 	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
+	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -170,7 +171,7 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memoriesService := memories.NewService(fakeMemoryStore{}, nil)
-	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, nil, "test-token", logger))
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, nil, nil, "test-token", logger))
 	defer httpServer.Close()
 
 	unauthorized, err := http.Get(httpServer.URL)
@@ -337,13 +338,26 @@ func (fakeEmailStore) UpdateEmailAccount(context.Context, string, email.UpdatePa
 }
 func (fakeEmailStore) DeleteEmailAccount(context.Context, string) error { return email.ErrNotFound }
 
+type fakePushoverStore struct{}
+
+func (fakePushoverStore) GetPushoverSettings(context.Context) (pushover.Settings, error) {
+	return pushover.Settings{}, pushover.ErrNotConfigured
+}
+func (fakePushoverStore) GetPushoverCredentials(context.Context) (pushover.Settings, []byte, []byte, error) {
+	return pushover.Settings{}, nil, nil, pushover.ErrNotConfigured
+}
+func (fakePushoverStore) UpsertPushoverSettings(context.Context, bool, []byte, []byte) (pushover.Settings, error) {
+	return pushover.Settings{}, nil
+}
+
 func TestMCPEmailToolsRegistered(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memoriesService := memories.NewService(fakeMemoryStore{}, nil)
 	key := make([]byte, 32)
 	emailService := email.NewService(fakeEmailStore{}, key, nil, nil)
-	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, emailService, "test-token", logger))
+	pushoverService := pushover.NewService(fakePushoverStore{}, key, nil)
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, emailService, pushoverService, "test-token", logger))
 	defer httpServer.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)
@@ -360,8 +374,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 53 {
-		t.Fatalf("tools = %d, want 53 with email", len(tools.Tools))
+	if len(tools.Tools) != 54 {
+		t.Fatalf("tools = %d, want 54 with email and pushover", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {
@@ -376,8 +390,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 			t.Fatalf("%s should be open-world", name)
 		}
 	}
-	if !*byName["send_email"].Annotations.DestructiveHint || !*byName["delete_email"].Annotations.DestructiveHint {
-		t.Fatal("send/delete should be destructive")
+	if !*byName["send_email"].Annotations.DestructiveHint || !*byName["delete_email"].Annotations.DestructiveHint || !*byName["send_pushover_notification"].Annotations.DestructiveHint {
+		t.Fatal("external delivery tools should be destructive")
 	}
 	if byName["list_email_accounts"].Annotations.OpenWorldHint != nil && *byName["list_email_accounts"].Annotations.OpenWorldHint {
 		t.Fatal("list_email_accounts should stay closed-world")

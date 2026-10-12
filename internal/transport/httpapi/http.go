@@ -27,6 +27,7 @@ import (
 	"github.com/leofelipet/contexta/internal/pagination"
 	"github.com/leofelipet/contexta/internal/passkeys"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
+	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/realtime"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
@@ -102,6 +103,7 @@ type Options struct {
 	Store              Store
 	Memories           *memories.Service
 	Email              *email.Service
+	Pushover           *pushover.Service
 	Ingestion          *ingestion.Service
 	APIToken           string
 	WebhookSecret      string
@@ -124,6 +126,7 @@ func New(options Options) http.Handler {
 		store:              options.Store,
 		memories:           options.Memories,
 		email:              options.Email,
+		pushover:           options.Pushover,
 		ingestion:          options.Ingestion,
 		webhookSecret:      options.WebhookSecret,
 		providerInstanceID: options.ProviderInstanceID,
@@ -194,6 +197,9 @@ func New(options Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/memories/{id}", handler.deleteMemory)
 	api.HandleFunc("GET /api/v1/integrations/uazapi", handler.uazapiStatus)
 	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
+	api.HandleFunc("GET /api/v1/integrations/pushover", handler.pushoverStatus)
+	api.HandleFunc("PATCH /api/v1/integrations/pushover", handler.configurePushover)
+	api.HandleFunc("POST /api/v1/integrations/pushover/send", handler.sendPushover)
 	api.HandleFunc("GET /api/v1/email-accounts", handler.listEmailAccounts)
 	api.HandleFunc("POST /api/v1/email-accounts", handler.createEmailAccount)
 	api.HandleFunc("GET /api/v1/email-accounts/{id}", handler.getEmailAccount)
@@ -216,6 +222,7 @@ type handler struct {
 	store              Store
 	memories           *memories.Service
 	email              *email.Service
+	pushover           *pushover.Service
 	ingestion          *ingestion.Service
 	webhookSecret      string
 	providerInstanceID string
@@ -1047,11 +1054,11 @@ func (h *handler) handleStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, email.ErrDisabled), errors.Is(err, postgres.ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, email.ErrProvider):
+	case errors.Is(err, email.ErrProvider), errors.Is(err, pushover.ErrProvider):
 		writeError(w, http.StatusBadGateway, err.Error())
-	case errors.Is(err, email.ErrMissingKey):
+	case errors.Is(err, email.ErrMissingKey), errors.Is(err, pushover.ErrMissingKey):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
-	case errors.Is(err, postgres.ErrInvalidArgument), errors.Is(err, email.ErrInvalidArgument),
+	case errors.Is(err, postgres.ErrInvalidArgument), errors.Is(err, email.ErrInvalidArgument), errors.Is(err, pushover.ErrInvalidArgument),
 		errors.Is(err, pagination.ErrInvalidCursor),
 		errors.Is(err, memories.ErrInvalidContent), errors.Is(err, memories.ErrEmbedderUnavailable),
 		strings.Contains(err.Error(), "direction must"):

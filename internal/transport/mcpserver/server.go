@@ -17,6 +17,7 @@ import (
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
@@ -68,11 +69,12 @@ type server struct {
 	store    Store
 	memories *memories.Service
 	email    *email.Service
+	pushover *pushover.Service
 	logger   *slog.Logger
 }
 
-func New(store Store, memoriesService *memories.Service, emailService *email.Service, token string, logger *slog.Logger) http.Handler {
-	implementation := &server{store: store, memories: memoriesService, email: emailService, logger: logger}
+func New(store Store, memoriesService *memories.Service, emailService *email.Service, pushoverService *pushover.Service, token string, logger *slog.Logger) http.Handler {
+	implementation := &server{store: store, memories: memoriesService, email: emailService, pushover: pushoverService, logger: logger}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: version.Version}, nil)
 	implementation.addTools(mcpServer)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
@@ -111,6 +113,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	s.addScheduleTools(mcpServer)
 	s.addBulkTools(mcpServer)
 	s.addEmailTools(mcpServer)
+	s.addPushoverTools(mcpServer)
 }
 
 func localWriteTool(name, description string) *mcp.Tool {
