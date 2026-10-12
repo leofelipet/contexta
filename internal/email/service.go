@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"mime"
@@ -238,7 +239,7 @@ func (s *Service) SendEmail(ctx context.Context, accountID string, params SendPa
 	sent, err := s.smtp.Send(ctx, smtpCreds(secrets), smtpmail.SendParams{
 		To: params.To, CC: params.CC, BCC: params.BCC, Subject: params.Subject,
 		BodyText: params.BodyText, BodyHTML: params.BodyHTML,
-		InReplyTo: params.InReplyTo, References: params.References, Attachments: mapAttachments(attachments),
+		InReplyTo: params.InReplyTo, References: params.References, Attachments: attachments,
 	})
 	if err != nil {
 		return SendResult{}, providerError("smtp", err)
@@ -358,13 +359,14 @@ func validateUIDs(uids []uint32) error {
 	return nil
 }
 
-func normalizeAttachments(attachments []Attachment) ([]Attachment, error) {
+func normalizeAttachments(attachments []Attachment) ([]smtpmail.Attachment, error) {
 	var total int
-	out := make([]Attachment, len(attachments))
+	out := make([]smtpmail.Attachment, len(attachments))
 	for i, attachment := range attachments {
 		attachment.Filename = strings.TrimSpace(attachment.Filename)
 		attachment.ContentType = strings.TrimSpace(attachment.ContentType)
-		if attachment.Filename == "" || strings.ContainsAny(attachment.Filename, "\r\n") || len(attachment.Content) > MaxAttachmentBytes-total {
+		content, err := base64.StdEncoding.DecodeString(attachment.Content)
+		if attachment.Filename == "" || strings.ContainsAny(attachment.Filename, "\r\n") || err != nil || len(content) > MaxAttachmentBytes-total {
 			return nil, ErrInvalidArgument
 		}
 		if attachment.ContentType != "" {
@@ -374,20 +376,10 @@ func normalizeAttachments(attachments []Attachment) ([]Attachment, error) {
 			}
 			attachment.ContentType = mime.FormatMediaType(mediaType, params)
 		}
-		total += len(attachment.Content)
-		out[i] = attachment
+		total += len(content)
+		out[i] = smtpmail.Attachment{Filename: attachment.Filename, ContentType: attachment.ContentType, Content: content}
 	}
 	return out, nil
-}
-
-func mapAttachments(attachments []Attachment) []smtpmail.Attachment {
-	out := make([]smtpmail.Attachment, len(attachments))
-	for i, attachment := range attachments {
-		out[i] = smtpmail.Attachment{
-			Filename: attachment.Filename, ContentType: attachment.ContentType, Content: attachment.Content,
-		}
-	}
-	return out
 }
 
 func imapCreds(s AccountSecrets) imapmail.Credentials {

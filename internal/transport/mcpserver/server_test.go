@@ -15,8 +15,10 @@ import (
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/email"
+	emailcrypto "github.com/leofelipet/contexta/internal/email/crypto"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
+	smtpmail "github.com/leofelipet/contexta/internal/providers/email/smtp"
 	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/tasks"
@@ -351,6 +353,23 @@ func (fakePushoverStore) UpsertPushoverSettings(context.Context, bool, []byte, [
 	return pushover.Settings{}, nil
 }
 
+type sendingEmailStore struct {
+	fakeEmailStore
+	ciphertext []byte
+}
+
+func (s sendingEmailStore) GetEmailAccountSecrets(context.Context, string) (email.AccountSecrets, []byte, error) {
+	return email.AccountSecrets{Account: email.Account{ID: "email-test", Address: "me@example.com", Enabled: true}}, s.ciphertext, nil
+}
+
+type sendingSMTP struct{ params smtpmail.SendParams }
+
+func (*sendingSMTP) Test(context.Context, smtpmail.Credentials) error { return nil }
+func (s *sendingSMTP) Send(_ context.Context, _ smtpmail.Credentials, params smtpmail.SendParams) (smtpmail.SentMessage, error) {
+	s.params = params
+	return smtpmail.SentMessage{MessageID: "sent@example.com"}, nil
+}
+
 func TestMCPEmailToolsRegistered(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -400,11 +419,78 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if !strings.Contains(byName["send_email"].Description, "attachments") || !strings.Contains(byName["send_email"].Description, "base64-encoded") {
 		t.Fatalf("send_email description does not explain attachments: %q", byName["send_email"].Description)
 	}
+	assertEmailAttachmentSchema(t, byName["send_email"])
 
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "list_email_accounts", Arguments: map[string]any{"enabled_only": true},
 	})
 	if err != nil || result.IsError || result.StructuredContent == nil {
 		t.Fatalf("list_email_accounts result = %#v, err = %v", result, err)
+	}
+}
+
+func TestMCPSendEmailAcceptsBase64Attachment(t *testing.T) {
+	t.Parallel()
+	key := make([]byte, 32)
+	ciphertext, err := emailcrypto.Encrypt(key, []byte("password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtpClient := &sendingSMTP{}
+	emailService := email.NewService(sendingEmailStore{ciphertext: ciphertext}, key, nil, smtpClient)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	httpServer := httptest.NewServer(New(fakeStore{}, memories.NewService(fakeMemoryStore{}, nil), emailService, nil, "test-token", logger))
+	defer httpServer.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: bearerTransport{token: "test-token"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "send_email", Arguments: map[string]any{
+		"account_id": "email-test", "to": []string{"recipient@example.com"}, "subject": "Attachment",
+		"attachments": []map[string]any{{"filename": "test.txt", "content_type": "text/plain", "content": "dGVzdGUK"}},
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if len(smtpClient.params.Attachments) != 1 || smtpClient.params.Attachments[0].Filename != "test.txt" || string(smtpClient.params.Attachments[0].Content) != "teste\n" {
+		t.Fatalf("attachments = %+v", smtpClient.params.Attachments)
+	}
+}
+
+func assertEmailAttachmentSchema(t *testing.T, tool *mcp.Tool) {
+	t.Helper()
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("input schema = %T", tool.InputSchema)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schema)
+	}
+	attachments, ok := properties["attachments"].(map[string]any)
+	if !ok {
+		t.Fatalf("attachments schema = %#v", properties["attachments"])
+	}
+	items, ok := attachments["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("attachments items = %#v", attachments)
+	}
+	attachmentProperties, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("attachment properties = %#v", items)
+	}
+	for _, name := range []string{"filename", "content_type", "content"} {
+		if _, ok := attachmentProperties[name]; !ok {
+			t.Fatalf("attachment schema missing %q: %#v", name, attachmentProperties)
+		}
+	}
+	content, ok := attachmentProperties["content"].(map[string]any)
+	if !ok || content["type"] != "string" {
+		t.Fatalf("attachment content schema = %#v", attachmentProperties["content"])
 	}
 }

@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"slices"
 	"testing"
@@ -160,7 +161,7 @@ func TestSendEmailForwardsAttachments(t *testing.T) {
 	service, _, _, smtpClient := newTestService(t, Account{Enabled: true})
 	_, err := service.SendEmail(context.Background(), testAccountID, SendParams{
 		To: []string{"a@example.com"}, Attachments: []Attachment{{
-			Filename: " report.txt ", ContentType: "text/plain", Content: []byte("report"),
+			Filename: " report.txt ", ContentType: "text/plain", Content: "cmVwb3J0",
 		}},
 	})
 	if err != nil {
@@ -179,10 +180,11 @@ func TestSendEmailRejectsInvalidAttachments(t *testing.T) {
 	t.Parallel()
 	service, _, _, _ := newTestService(t, Account{Enabled: true})
 	for name, attachments := range map[string][]Attachment{
-		"missing filename":  {{Content: []byte("x")}},
+		"missing filename":  {{Content: "eA=="}},
 		"header injection":  {{Filename: "report\r\n.pdf"}},
+		"invalid Base64":    {{Filename: "report.txt", Content: "not Base64"}},
 		"invalid MIME type": {{Filename: "report.txt", ContentType: "not a MIME type"}},
-		"too large":         {{Filename: "report.bin", Content: make([]byte, MaxAttachmentBytes+1)}},
+		"too large":         {{Filename: "report.bin", Content: base64.StdEncoding.EncodeToString(make([]byte, MaxAttachmentBytes+1))}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := service.SendEmail(context.Background(), testAccountID, SendParams{To: []string{"a@example.com"}, Attachments: attachments})
