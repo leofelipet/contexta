@@ -151,15 +151,16 @@ func (s *server) getEmail(ctx context.Context, _ *mcp.CallToolRequest, input get
 }
 
 type sendEmailInput struct {
-	AccountID  string   `json:"account_id" jsonschema:"Contexta email account ID."`
-	To         []string `json:"to" jsonschema:"Recipient addresses."`
-	CC         []string `json:"cc,omitempty" jsonschema:"CC recipients."`
-	BCC        []string `json:"bcc,omitempty" jsonschema:"BCC recipients."`
-	Subject    string   `json:"subject" jsonschema:"Email subject."`
-	BodyText   string   `json:"body_text,omitempty" jsonschema:"Plain-text body."`
-	BodyHTML   string   `json:"body_html,omitempty" jsonschema:"HTML body."`
-	InReplyTo  string   `json:"in_reply_to,omitempty" jsonschema:"In-Reply-To message-id header."`
-	References string   `json:"references,omitempty" jsonschema:"References header."`
+	AccountID   string             `json:"account_id" jsonschema:"Contexta email account ID."`
+	To          []string           `json:"to" jsonschema:"Recipient addresses."`
+	CC          []string           `json:"cc,omitempty" jsonschema:"CC recipients."`
+	BCC         []string           `json:"bcc,omitempty" jsonschema:"BCC recipients."`
+	Subject     string             `json:"subject" jsonschema:"Email subject."`
+	BodyText    string             `json:"body_text,omitempty" jsonschema:"Plain-text body."`
+	BodyHTML    string             `json:"body_html,omitempty" jsonschema:"HTML body."`
+	InReplyTo   string             `json:"in_reply_to,omitempty" jsonschema:"In-Reply-To message-id header."`
+	References  string             `json:"references,omitempty" jsonschema:"References header."`
+	Attachments []email.Attachment `json:"attachments,omitempty" jsonschema:"Attachments with filename, optional content_type, and base64-encoded content. Total decoded content may not exceed 10 MiB."`
 }
 
 type sendEmailOutput struct {
@@ -174,7 +175,7 @@ func (s *server) sendEmail(ctx context.Context, _ *mcp.CallToolRequest, input se
 	result, err := s.email.SendEmail(ctx, input.AccountID, email.SendParams{
 		To: input.To, CC: input.CC, BCC: input.BCC, Subject: input.Subject,
 		BodyText: input.BodyText, BodyHTML: input.BodyHTML,
-		InReplyTo: input.InReplyTo, References: input.References,
+		InReplyTo: input.InReplyTo, References: input.References, Attachments: input.Attachments,
 	})
 	if err != nil {
 		s.logError(ctx, "send_email", err)

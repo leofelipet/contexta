@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/mail"
 	"strings"
 	"sync"
@@ -224,6 +225,10 @@ func (s *Service) SendEmail(ctx context.Context, accountID string, params SendPa
 	if len(params.To) == 0 {
 		return SendResult{}, ErrInvalidArgument
 	}
+	attachments, err := normalizeAttachments(params.Attachments)
+	if err != nil {
+		return SendResult{}, err
+	}
 	secrets, err := s.loadSecrets(ctx, accountID, true)
 	if err != nil {
 		return SendResult{}, err
@@ -233,7 +238,7 @@ func (s *Service) SendEmail(ctx context.Context, accountID string, params SendPa
 	sent, err := s.smtp.Send(ctx, smtpCreds(secrets), smtpmail.SendParams{
 		To: params.To, CC: params.CC, BCC: params.BCC, Subject: params.Subject,
 		BodyText: params.BodyText, BodyHTML: params.BodyHTML,
-		InReplyTo: params.InReplyTo, References: params.References,
+		InReplyTo: params.InReplyTo, References: params.References, Attachments: mapAttachments(attachments),
 	})
 	if err != nil {
 		return SendResult{}, providerError("smtp", err)
@@ -351,6 +356,38 @@ func validateUIDs(uids []uint32) error {
 		}
 	}
 	return nil
+}
+
+func normalizeAttachments(attachments []Attachment) ([]Attachment, error) {
+	var total int
+	out := make([]Attachment, len(attachments))
+	for i, attachment := range attachments {
+		attachment.Filename = strings.TrimSpace(attachment.Filename)
+		attachment.ContentType = strings.TrimSpace(attachment.ContentType)
+		if attachment.Filename == "" || strings.ContainsAny(attachment.Filename, "\r\n") || len(attachment.Content) > MaxAttachmentBytes-total {
+			return nil, ErrInvalidArgument
+		}
+		if attachment.ContentType != "" {
+			mediaType, params, err := mime.ParseMediaType(attachment.ContentType)
+			if err != nil {
+				return nil, ErrInvalidArgument
+			}
+			attachment.ContentType = mime.FormatMediaType(mediaType, params)
+		}
+		total += len(attachment.Content)
+		out[i] = attachment
+	}
+	return out, nil
+}
+
+func mapAttachments(attachments []Attachment) []smtpmail.Attachment {
+	out := make([]smtpmail.Attachment, len(attachments))
+	for i, attachment := range attachments {
+		out[i] = smtpmail.Attachment{
+			Filename: attachment.Filename, ContentType: attachment.ContentType, Content: attachment.Content,
+		}
+	}
+	return out
 }
 
 func imapCreds(s AccountSecrets) imapmail.Credentials {

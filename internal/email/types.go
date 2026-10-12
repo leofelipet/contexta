@@ -6,6 +6,9 @@ const (
 	DefaultSearchLimit = 20
 	MaxSearchLimit     = 50
 	MaxBodyBytes       = 100 << 10 // 100 KiB truncated body for agents
+	// MaxAttachmentBytes is the total decoded attachment data allowed per email.
+	// shortcut: 10 MiB cap, make configurable when larger mailbox limits are needed.
+	MaxAttachmentBytes = 10 << 20
 )
 
 type Account struct {
@@ -129,14 +132,22 @@ type SearchParams struct {
 }
 
 type SendParams struct {
-	To         []string
-	CC         []string
-	BCC        []string
-	Subject    string
-	BodyText   string
-	BodyHTML   string
-	InReplyTo  string
-	References string
+	To          []string
+	CC          []string
+	BCC         []string
+	Subject     string
+	BodyText    string
+	BodyHTML    string
+	InReplyTo   string
+	References  string
+	Attachments []Attachment
+}
+
+// Attachment is email content supplied in memory. Content is base64-encoded in JSON.
+type Attachment struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type,omitempty"`
+	Content     []byte `json:"content"`
 }
 
 type FlagUpdate struct {

@@ -24,14 +24,21 @@ type Credentials struct {
 }
 
 type SendParams struct {
-	To         []string
-	CC         []string
-	BCC        []string
-	Subject    string
-	BodyText   string
-	BodyHTML   string
-	InReplyTo  string
-	References string
+	To          []string
+	CC          []string
+	BCC         []string
+	Subject     string
+	BodyText    string
+	BodyHTML    string
+	InReplyTo   string
+	References  string
+	Attachments []Attachment
+}
+
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Content     []byte
 }
 
 // SentMessage is the message as delivered, so callers can file a copy in Sent.
@@ -119,6 +126,15 @@ func buildMessage(from string, params SendParams) (*mail.Msg, error) {
 		msg.SetBodyString(mail.TypeTextHTML, bodyHTML)
 	default:
 		msg.SetBodyString(mail.TypeTextPlain, bodyText)
+	}
+	for _, attachment := range params.Attachments {
+		opts := []mail.FileOption{}
+		if attachment.ContentType != "" {
+			opts = append(opts, mail.WithFileContentType(mail.ContentType(attachment.ContentType)))
+		}
+		if err := msg.AttachReader(attachment.Filename, bytes.NewReader(attachment.Content), opts...); err != nil {
+			return nil, fmt.Errorf("attachment %q: %w", attachment.Filename, err)
+		}
 	}
 	return msg, nil
 }

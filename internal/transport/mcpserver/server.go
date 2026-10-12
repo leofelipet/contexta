@@ -78,7 +78,7 @@ func New(store Store, memoriesService *memories.Service, emailService *email.Ser
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return mcpServer
 	}, &mcp.StreamableHTTPOptions{Stateless: true})
-	return auth.NewMiddleware(token).Wrap(handler)
+	return auth.NewMiddleware(token).Wrap(http.MaxBytesHandler(handler, 14<<20))
 }
 
 func (s *server) addTools(mcpServer *mcp.Server) {

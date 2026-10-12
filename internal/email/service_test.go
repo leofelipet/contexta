@@ -78,10 +78,12 @@ func (f *fakeIMAP) AppendSent(_ context.Context, _ imapmail.Credentials, raw []b
 type fakeSMTP struct {
 	testErr error
 	sendErr error
+	params  smtpmail.SendParams
 }
 
 func (f *fakeSMTP) Test(context.Context, smtpmail.Credentials) error { return f.testErr }
-func (f *fakeSMTP) Send(context.Context, smtpmail.Credentials, smtpmail.SendParams) (smtpmail.SentMessage, error) {
+func (f *fakeSMTP) Send(_ context.Context, _ smtpmail.Credentials, params smtpmail.SendParams) (smtpmail.SentMessage, error) {
+	f.params = params
 	if f.sendErr != nil {
 		return smtpmail.SentMessage{}, f.sendErr
 	}
@@ -150,6 +152,44 @@ func TestSendEmailSavesSentCopyWhenEnabled(t *testing.T) {
 	}
 	if !result.SavedToSent || result.MessageID != "abc@example.com" || string(imapClient.appendedRaw) != "raw message" {
 		t.Fatalf("result = %+v, appended = %q", result, imapClient.appendedRaw)
+	}
+}
+
+func TestSendEmailForwardsAttachments(t *testing.T) {
+	t.Parallel()
+	service, _, _, smtpClient := newTestService(t, Account{Enabled: true})
+	_, err := service.SendEmail(context.Background(), testAccountID, SendParams{
+		To: []string{"a@example.com"}, Attachments: []Attachment{{
+			Filename: " report.txt ", ContentType: "text/plain", Content: []byte("report"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(smtpClient.params.Attachments) != 1 {
+		t.Fatalf("attachments = %+v", smtpClient.params.Attachments)
+	}
+	attachment := smtpClient.params.Attachments[0]
+	if attachment.Filename != "report.txt" || attachment.ContentType != "text/plain" || string(attachment.Content) != "report" {
+		t.Fatalf("attachment = %+v", attachment)
+	}
+}
+
+func TestSendEmailRejectsInvalidAttachments(t *testing.T) {
+	t.Parallel()
+	service, _, _, _ := newTestService(t, Account{Enabled: true})
+	for name, attachments := range map[string][]Attachment{
+		"missing filename":  {{Content: []byte("x")}},
+		"header injection":  {{Filename: "report\r\n.pdf"}},
+		"invalid MIME type": {{Filename: "report.txt", ContentType: "not a MIME type"}},
+		"too large":         {{Filename: "report.bin", Content: make([]byte, MaxAttachmentBytes+1)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := service.SendEmail(context.Background(), testAccountID, SendParams{To: []string{"a@example.com"}, Attachments: attachments})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("err = %v, want ErrInvalidArgument", err)
+			}
+		})
 	}
 }
 

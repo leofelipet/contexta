@@ -84,6 +84,8 @@ curl -X POST http://localhost:8080/api/v1/email-accounts/{id}/test -H "Authoriza
 
 TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports use implicit TLS. `save_sent_copy` files sent mail in the Sent folder via IMAP; it defaults to `false` for Gmail and Microsoft 365, which already do this, and `true` elsewhere. Each IMAP/SMTP operation times out after 25 seconds.
 
+`send_email` accepts attachments as a filename, optional MIME content type, and Base64-encoded content. The combined decoded attachment size is limited to 10 MiB; file paths on the Contexta host are never accepted.
+
 `get_email` never marks messages as read; agents call `mark_email_read` explicitly. `delete_email` moves mail to the Trash folder. When the message is already in Trash, or the account has no Trash folder, it permanently expunges only that message and refuses when the server lacks UIDPLUS.
 
 ## Companies

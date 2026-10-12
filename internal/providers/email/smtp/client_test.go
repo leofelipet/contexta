@@ -39,3 +39,25 @@ func TestBuildMessageRequiresRecipient(t *testing.T) {
 		t.Fatal("expected error without recipients")
 	}
 }
+
+func TestBuildMessageAttachesInMemoryContent(t *testing.T) {
+	t.Parallel()
+	msg, err := buildMessage("me@example.com", SendParams{
+		To: []string{"a@example.com"}, Attachments: []Attachment{{
+			Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("PDF"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw bytes.Buffer
+	if _, err := msg.WriteTo(&raw); err != nil {
+		t.Fatal(err)
+	}
+	out := raw.String()
+	for _, want := range []string{"multipart/mixed", "Content-Type: application/pdf", "Content-Disposition: attachment", "report.pdf", "UERG"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("raw message missing %q:\n%s", want, out)
+		}
+	}
+}
