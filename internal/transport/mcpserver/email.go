@@ -48,7 +48,7 @@ func (s *server) addEmailTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_email_accounts", "List configured corporate email accounts (no secrets). Prefer enabled accounts for mailbox operations."), s.listEmailAccounts)
 	mcp.AddTool(mcpServer, openWorldReadTool("list_mailboxes", "List IMAP folders/mailboxes for one email account."), s.listMailboxes)
 	mcp.AddTool(mcpServer, openWorldReadTool("search_emails", "Search emails live via IMAP (folder, unseen, from/to/subject, date range)."), s.searchEmails)
-	mcp.AddTool(mcpServer, destructiveOpenWorldTool("send_email", "Send an email via the account SMTP settings and file a copy in Sent when the account has save_sent_copy. Destructive: delivers to external recipients."), s.sendEmail)
+	mcp.AddTool(mcpServer, destructiveOpenWorldTool("send_email", "Send an email via the account SMTP settings and file a copy in Sent when save_sent_copy is enabled. To send files, use attachments: each item requires filename and base64-encoded content, with optional content_type (for example, application/pdf). Do not use local file paths or URLs: Contexta sends only the supplied Base64 bytes. Total decoded attachments are limited to 10 MiB. Destructive: delivers to external recipients."), s.sendEmail)
 	mcp.AddTool(mcpServer, openWorldReadTool("get_email", "Fetch one email by IMAP UID including truncated body text/html and attachment metadata. Does not mark the email as read; call mark_email_read for that."), s.getEmail)
 	mcp.AddTool(mcpServer, openWorldWriteTool("mark_email_read", "Mark one or more emails (up to 100 UIDs in the same folder) as read, or as unread with read=false."), s.markEmailRead)
 	mcp.AddTool(mcpServer, openWorldWriteTool("set_email_flags", "Add or remove IMAP flags (e.g. seen, flagged) on one message."), s.setEmailFlags)
@@ -160,7 +160,7 @@ type sendEmailInput struct {
 	BodyHTML    string             `json:"body_html,omitempty" jsonschema:"HTML body."`
 	InReplyTo   string             `json:"in_reply_to,omitempty" jsonschema:"In-Reply-To message-id header."`
 	References  string             `json:"references,omitempty" jsonschema:"References header."`
-	Attachments []email.Attachment `json:"attachments,omitempty" jsonschema:"Attachments with filename, optional content_type, and base64-encoded content. Total decoded content may not exceed 10 MiB."`
+	Attachments []email.Attachment `json:"attachments,omitempty" jsonschema:"Optional files to attach. Each item requires filename and Base64 content; content_type is optional (for example, application/pdf). Do not pass a file path or URL. Total decoded content may not exceed 10 MiB."`
 }
 
 type sendEmailOutput struct {

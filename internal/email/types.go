@@ -145,9 +145,9 @@ type SendParams struct {
 
 // Attachment is email content supplied in memory. Content is base64-encoded in JSON.
 type Attachment struct {
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type,omitempty"`
-	Content     []byte `json:"content"`
+	Filename    string `json:"filename" jsonschema:"Required attachment filename, such as report.pdf."`
+	ContentType string `json:"content_type,omitempty" jsonschema:"Optional MIME type, such as application/pdf."`
+	Content     []byte `json:"content" jsonschema:"Required file bytes as a Base64-encoded JSON string; not a local path or URL."`
 }
 
 type FlagUpdate struct {

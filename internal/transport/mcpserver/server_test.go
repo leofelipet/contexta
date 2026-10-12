@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/leofelipet/contexta/internal/activity"
@@ -395,6 +396,9 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	}
 	if byName["list_email_accounts"].Annotations.OpenWorldHint != nil && *byName["list_email_accounts"].Annotations.OpenWorldHint {
 		t.Fatal("list_email_accounts should stay closed-world")
+	}
+	if !strings.Contains(byName["send_email"].Description, "attachments") || !strings.Contains(byName["send_email"].Description, "base64-encoded") {
+		t.Fatalf("send_email description does not explain attachments: %q", byName["send_email"].Description)
 	}
 
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
