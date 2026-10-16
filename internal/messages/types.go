@@ -60,3 +60,45 @@ type Around struct {
 	Message  Message   `json:"message"`
 	Next     []Message `json:"next"`
 }
+
+// BulkAcknowledgeParams selects messages to acknowledge by filter instead of by ID.
+type BulkAcknowledgeParams struct {
+	ConsumerID     string
+	Before         time.Time
+	After          *time.Time
+	ConversationID string
+	ContactID      string
+	Direction      string
+	DryRun         bool
+	Confirm        bool
+}
+
+type BulkAcknowledgeResult struct {
+	// Matched counts unread messages covered by the filter before this call.
+	Matched             int        `json:"matched_unread"`
+	Acknowledged        int        `json:"acknowledged"`
+	AlreadyAcknowledged int        `json:"already_acknowledged"`
+	OldestMessageAt     *time.Time `json:"oldest_message_at,omitempty"`
+	NewestMessageAt     *time.Time `json:"newest_message_at,omitempty"`
+	DryRun              bool       `json:"dry_run"`
+	// ConfirmationRequired is set when the filter exceeds the safety limit and confirm was not given; nothing is written.
+	ConfirmationRequired bool `json:"confirmation_required,omitempty"`
+}
+
+type UnreadCountParams struct {
+	ConsumerID string
+	Before     *time.Time
+	After      *time.Time
+	Timezone   string
+}
+
+type UnreadCount struct {
+	Total    int                `json:"total"`
+	Timezone string             `json:"timezone"`
+	Months   []UnreadMonthCount `json:"months"`
+}
+
+type UnreadMonthCount struct {
+	Month string `json:"month"`
+	Count int    `json:"count"`
+}

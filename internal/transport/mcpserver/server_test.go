@@ -50,6 +50,20 @@ func (fakeStore) ListUnreadMessages(context.Context, messages.UnreadParams) (mes
 func (fakeStore) AcknowledgeMessages(context.Context, string, []string) (int, error) {
 	return 1, nil
 }
+func (fakeStore) AcknowledgeMessagesBulk(_ context.Context, params messages.BulkAcknowledgeParams) (messages.BulkAcknowledgeResult, error) {
+	result := messages.BulkAcknowledgeResult{Matched: 6000, AlreadyAcknowledged: 2, DryRun: params.DryRun}
+	if !params.DryRun && !params.Confirm {
+		result.ConfirmationRequired = true
+	} else if !params.DryRun {
+		result.Acknowledged = result.Matched
+	}
+	return result, nil
+}
+
+func (fakeStore) CountUnreadMessages(_ context.Context, params messages.UnreadCountParams) (messages.UnreadCount, error) {
+	return messages.UnreadCount{Total: 3, Timezone: params.Timezone, Months: []messages.UnreadMonthCount{{Month: "2026-07", Count: 3}}}, nil
+}
+
 func (fakeStore) GetMessagesAround(context.Context, string, int, int) (messages.Around, error) {
 	return messages.Around{}, nil
 }
@@ -200,11 +214,12 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 44 {
-		t.Fatalf("tools = %d, want 44 (without email service)", len(tools.Tools))
+	if len(tools.Tools) != 46 {
+		t.Fatalf("tools = %d, want 46 (without email service)", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
 		"acknowledge_messages":        true,
+		"acknowledge_messages_bulk":   true,
 		"add_to_denylist":             true,
 		"remove_from_denylist":        true,
 		"create_task":                 true,
@@ -261,6 +276,33 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	})
 	if err != nil || result.IsError || result.StructuredContent == nil {
 		t.Fatalf("acknowledge result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "acknowledge_messages_bulk", Arguments: map[string]any{
+			"consumer_id": "primary-agent", "before": "2026-10-16T20:00:00Z", "direction": "all", "dry_run": true,
+		},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("acknowledge_messages_bulk dry run = %#v, err = %v", result, err)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "acknowledge_messages_bulk", Arguments: map[string]any{"consumer_id": "primary-agent", "before": "2026-10-16"},
+	})
+	if err != nil || !result.IsError {
+		t.Fatalf("acknowledge_messages_bulk without confirm = %#v, err = %v", result, err)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "acknowledge_messages_bulk", Arguments: map[string]any{"consumer_id": "primary-agent", "before": "2026-10-16", "confirm": true},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("acknowledge_messages_bulk with confirm = %#v, err = %v", result, err)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "count_unread", Arguments: map[string]any{"consumer_id": "primary-agent"},
+	})
+	if err != nil || result.IsError || result.StructuredContent == nil {
+		t.Fatalf("count_unread = %#v, err = %v", result, err)
 	}
 
 	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
@@ -394,8 +436,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 54 {
-		t.Fatalf("tools = %d, want 54 with email and pushover", len(tools.Tools))
+	if len(tools.Tools) != 56 {
+		t.Fatalf("tools = %d, want 56 with email and pushover", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {

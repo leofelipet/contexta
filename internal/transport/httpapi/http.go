@@ -1008,7 +1008,7 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
 		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "attach_memory_to_task", "detach_memory_from_task", "list_task_schedules", "get_task_schedule", "create_task_schedule", "update_task_schedule", "delete_task_schedule", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
+		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "acknowledge_messages_bulk", "count_unread", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "attach_memory_to_task", "detach_memory_from_task", "list_task_schedules", "get_task_schedule", "create_task_schedule", "update_task_schedule", "delete_task_schedule", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
 		LastAccessAt: lastAccess,
 	})
 }

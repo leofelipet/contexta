@@ -33,6 +33,8 @@ type Store interface {
 	SearchMessages(context.Context, messages.SearchParams) (messages.Page, error)
 	ListUnreadMessages(context.Context, messages.UnreadParams) (messages.Page, error)
 	AcknowledgeMessages(context.Context, string, []string) (int, error)
+	AcknowledgeMessagesBulk(context.Context, messages.BulkAcknowledgeParams) (messages.BulkAcknowledgeResult, error)
+	CountUnreadMessages(context.Context, messages.UnreadCountParams) (messages.UnreadCount, error)
 	GetMessagesAround(context.Context, string, int, int) (messages.Around, error)
 	ListDenylist(context.Context, denylist.ListParams) (denylist.Page, error)
 	AddDenylistEntry(context.Context, denylist.AddParams) (denylist.Entry, error)
@@ -85,8 +87,8 @@ func New(store Store, memoriesService *memories.Service, emailService *email.Ser
 
 func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("search_messages", "Search stored WhatsApp messages using text, time, contact, conversation, direction, and agent read-state filters."), s.searchMessages)
-	mcp.AddTool(mcpServer, readOnlyTool("list_unread_messages", "List messages not yet acknowledged by a specific agent consumer. This does not mark them as read."), s.listUnreadMessages)
-	mcp.AddTool(mcpServer, localWriteTool("acknowledge_messages", "Mark a batch of messages as processed by a specific agent consumer without changing WhatsApp data."), s.acknowledgeMessages)
+	mcp.AddTool(mcpServer, readOnlyTool("list_unread_messages", "List messages not yet acknowledged by a specific agent consumer. This does not mark them as read. To drain the queue, call without cursor, acknowledge the returned IDs, and call again without cursor: acknowledged messages leave the queue, so the first page always holds the next pending ones. next_cursor is only for browsing further without acknowledging; if the same messages come back, they were not acknowledged (check not_acknowledged in the acknowledge_messages result). For large backlogs use count_unread and acknowledge_messages_bulk."), s.listUnreadMessages)
+	mcp.AddTool(mcpServer, localWriteTool("acknowledge_messages", "Mark up to 100 messages by ID as processed by a specific agent consumer without changing WhatsApp data. For filter-based acknowledgment without an ID limit, use acknowledge_messages_bulk."), s.acknowledgeMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("find_conversations", "Find WhatsApp conversations by title, contact, or time range."), s.findConversations)
 	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID."), s.getConversation)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages", "Get a paginated page of messages from one conversation."), s.getMessages)
@@ -109,6 +111,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically."), s.saveMemory)
 	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links. Changing content re-embeds the memory."), s.updateMemory)
 	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
+	s.addMessageReadTools(mcpServer)
 	s.addCompanyTools(mcpServer)
 	s.addScheduleTools(mcpServer)
 	s.addBulkTools(mcpServer)
@@ -207,6 +210,8 @@ type acknowledgeMessagesInput struct {
 
 type acknowledgeMessagesOutput struct {
 	Acknowledged int `json:"acknowledged"`
+	// NotAcknowledged counts distinct requested IDs that are unknown or still being transcribed; they stay unread.
+	NotAcknowledged int `json:"not_acknowledged"`
 }
 
 func (s *server) acknowledgeMessages(ctx context.Context, _ *mcp.CallToolRequest, input acknowledgeMessagesInput) (*mcp.CallToolResult, acknowledgeMessagesOutput, error) {
@@ -216,7 +221,7 @@ func (s *server) acknowledgeMessages(ctx context.Context, _ *mcp.CallToolRequest
 		s.logError(ctx, "acknowledge_messages", err)
 		return nil, acknowledgeMessagesOutput{}, safeToolError(err)
 	}
-	return nil, acknowledgeMessagesOutput{Acknowledged: acknowledged}, nil
+	return nil, acknowledgeMessagesOutput{Acknowledged: acknowledged, NotAcknowledged: max(0, countDistinct(input.MessageIDs)-acknowledged)}, nil
 }
 
 type findConversationsInput struct {
@@ -764,6 +769,14 @@ func parseDateTime(value string, dateEnd bool) (*time.Time, error) {
 		parsed = parsed.AddDate(0, 0, 1)
 	}
 	return &parsed, nil
+}
+
+func countDistinct(values []string) int {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	return len(seen)
 }
 
 func mcpLimit(value int) int {

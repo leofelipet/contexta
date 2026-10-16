@@ -205,6 +205,8 @@ Available tools:
 search_messages
 list_unread_messages
 acknowledge_messages
+acknowledge_messages_bulk
+count_unread
 find_conversations
 get_conversation
 get_messages
@@ -248,6 +250,10 @@ send_pushover_notification
 ```
 
 Message read state is tracked independently for each agent `consumer_id`. Use `list_unread_messages` to fetch pending work without changing state, then call `acknowledge_messages` only after processing succeeds. `search_messages` accepts optional `consumer_id` and `read_state` (`all`, `read`, or `unread`) filters. Existing search and conversation tools always remain available for historical access.
+
+To drain the queue, call `list_unread_messages` without `cursor`, acknowledge the returned IDs, and call it again without `cursor`: acknowledged messages leave the queue, so the first page always holds the next pending messages. `next_cursor` is only needed to browse further without acknowledging. `acknowledge_messages` accepts up to 100 IDs and reports `not_acknowledged` for IDs that were unknown or still awaiting transcription.
+
+For large backlogs, `count_unread` returns the unread total grouped by month (`timezone` defaults to `America/Sao_Paulo`), and `acknowledge_messages_bulk` marks every unread message matching `before` (required, exclusive), `after`, `conversation_id`, `contact_id`, and `direction` (`incoming`, `outgoing`, or `all`) in one server-side statement. Run it with `dry_run: true` first; filters covering more than 5,000 unread messages require `confirm: true`.
 
 All existing messages start unread for a new consumer. Audio messages with an active transcription job are held out of the unread queue until transcription completes or permanently fails. Acknowledgement only writes local read receipts; it never modifies or sends WhatsApp messages.
 
