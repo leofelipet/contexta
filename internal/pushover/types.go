@@ -20,8 +20,11 @@ type SendParams struct {
 	Title    string
 	Priority *int
 	URL      string
+	Retry    *int
+	Expire   *int
 }
 
 type SendResult struct {
 	Request string `json:"request,omitempty"`
+	Receipt string `json:"receipt,omitempty"`
 }

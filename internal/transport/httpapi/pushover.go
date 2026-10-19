@@ -55,6 +55,8 @@ type sendPushoverRequest struct {
 	Title    string `json:"title"`
 	Priority *int   `json:"priority"`
 	URL      string `json:"url"`
+	Retry    *int   `json:"retry"`
+	Expire   *int   `json:"expire"`
 }
 
 func (h *handler) sendPushover(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +73,7 @@ func (h *handler) sendPushover(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.pushover.Send(r.Context(), pushover.SendParams{
 		Message: request.Message, Title: request.Title, Priority: request.Priority, URL: request.URL,
+		Retry: request.Retry, Expire: request.Expire,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)

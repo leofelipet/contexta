@@ -18,6 +18,14 @@ var (
 	ErrProvider        = errors.New("pushover provider error")
 )
 
+const (
+	EmergencyPriority      = 2
+	DefaultEmergencyRetry  = 60
+	DefaultEmergencyExpire = 3600
+	MinEmergencyRetry      = 30
+	MaxEmergencyExpire     = 10800
+)
+
 type ProviderError struct{ Err error }
 
 func (e *ProviderError) Error() string { return e.Err.Error() }
@@ -116,8 +124,12 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 	if params.Priority != nil {
 		priority = *params.Priority
 	}
-	if priority < -2 || priority > 1 {
+	if priority < -2 || priority > EmergencyPriority {
 		return SendResult{}, ErrInvalidArgument
+	}
+	retry, expire, err := emergencyTiming(priority, params.Retry, params.Expire)
+	if err != nil {
+		return SendResult{}, err
 	}
 	if err := s.requireKey(); err != nil {
 		return SendResult{}, err
@@ -139,11 +151,34 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 	}
 	result, err := s.client.Send(ctx, provider.Credentials{AppToken: string(appToken), UserKey: string(userKey)}, provider.SendParams{
 		Message: message, Title: strings.TrimSpace(params.Title), Priority: priority, URL: strings.TrimSpace(params.URL),
+		Retry: retry, Expire: expire,
 	})
 	if err != nil {
 		return SendResult{}, &ProviderError{Err: err}
 	}
-	return SendResult{Request: result.Request}, nil
+	return SendResult{Request: result.Request, Receipt: result.Receipt}, nil
+}
+
+// emergencyTiming resolves retry/expire, which Pushover only accepts for emergency priority.
+// They are rejected for other priorities rather than silently dropped.
+func emergencyTiming(priority int, retryParam, expireParam *int) (int, int, error) {
+	if priority != EmergencyPriority {
+		if retryParam != nil || expireParam != nil {
+			return 0, 0, ErrInvalidArgument
+		}
+		return 0, 0, nil
+	}
+	retry, expire := DefaultEmergencyRetry, DefaultEmergencyExpire
+	if retryParam != nil {
+		retry = *retryParam
+	}
+	if expireParam != nil {
+		expire = *expireParam
+	}
+	if retry < MinEmergencyRetry || expire <= 0 || expire > MaxEmergencyExpire || expire < retry {
+		return 0, 0, ErrInvalidArgument
+	}
+	return retry, expire, nil
 }
 
 func (s *Service) requireKey() error {

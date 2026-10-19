@@ -90,7 +90,7 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 ## Pushover
 
-Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `1`), and optional URL. Emergency priority (`2`) is not supported because it requires a receipt/retry workflow.
+Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `2`), and optional URL. Emergency priority `2` accepts optional `retry` (seconds, minimum 30, default 60) and `expire` (seconds, at most 10800 and not less than `retry`, default 3600) and returns the Pushover `receipt`; `retry`/`expire` are rejected for other priorities. Contexta does not poll receipts.
 
 ## Companies
 

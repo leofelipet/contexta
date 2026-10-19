@@ -24,10 +24,15 @@ type SendParams struct {
 	Title    string
 	Priority int
 	URL      string
+	// Retry and Expire are in seconds and only sent for emergency priority 2.
+	Retry  int
+	Expire int
 }
 
 type Result struct {
 	Request string
+	// Receipt is returned only for emergency priority notifications.
+	Receipt string
 }
 
 type Client struct {
@@ -54,6 +59,10 @@ func (c *Client) Send(ctx context.Context, credentials Credentials, params SendP
 	if params.URL != "" {
 		form.Set("url", params.URL)
 	}
+	if params.Priority == 2 {
+		form.Set("retry", strconv.Itoa(params.Retry))
+		form.Set("expire", strconv.Itoa(params.Expire))
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return Result{}, fmt.Errorf("create request: %w", err)
@@ -72,6 +81,7 @@ func (c *Client) Send(ctx context.Context, credentials Credentials, params SendP
 	var payload struct {
 		Status  int      `json:"status"`
 		Request string   `json:"request"`
+		Receipt string   `json:"receipt"`
 		Errors  []string `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -84,5 +94,5 @@ func (c *Client) Send(ctx context.Context, credentials Credentials, params SendP
 		}
 		return Result{}, fmt.Errorf("pushover: %s", detail)
 	}
-	return Result{Request: payload.Request}, nil
+	return Result{Request: payload.Request, Receipt: payload.Receipt}, nil
 }

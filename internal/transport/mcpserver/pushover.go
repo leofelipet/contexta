@@ -12,31 +12,35 @@ func (s *server) addPushoverTools(mcpServer *mcp.Server) {
 	if s.pushover == nil {
 		return
 	}
-	mcp.AddTool(mcpServer, destructiveOpenWorldTool("send_pushover_notification", "Send an external Pushover notification. Requires the Pushover integration to be configured. Emergency priority 2 is not supported."), s.sendPushoverNotification)
+	mcp.AddTool(mcpServer, destructiveOpenWorldTool("send_pushover_notification", "Send an external Pushover notification. Requires the Pushover integration to be configured. Emergency priority 2 repeats the alert every retry seconds until acknowledged or expire seconds elapse, and returns a receipt."), s.sendPushoverNotification)
 }
 
 type sendPushoverNotificationInput struct {
 	Message  string `json:"message" jsonschema:"Required notification text."`
 	Title    string `json:"title,omitempty" jsonschema:"Optional notification title."`
-	Priority *int   `json:"priority,omitempty" jsonschema:"Optional priority from -2 (lowest) to 1 (high); defaults to 0."`
+	Priority *int   `json:"priority,omitempty" jsonschema:"Optional priority from -2 (lowest) to 2 (emergency); defaults to 0. Emergency priority 2 repeats until acknowledged or expired."`
 	URL      string `json:"url,omitempty" jsonschema:"Optional supplementary URL."`
+	Retry    *int   `json:"retry,omitempty" jsonschema:"Optional seconds between emergency retries, minimum 30; defaults to 60. Only allowed with priority 2."`
+	Expire   *int   `json:"expire,omitempty" jsonschema:"Optional seconds until emergency retries stop, up to 10800 and not less than retry; defaults to 3600. Only allowed with priority 2."`
 }
 
 type sendPushoverNotificationOutput struct {
 	Sent    bool   `json:"sent"`
 	Request string `json:"request,omitempty"`
+	Receipt string `json:"receipt,omitempty"`
 }
 
 func (s *server) sendPushoverNotification(ctx context.Context, _ *mcp.CallToolRequest, input sendPushoverNotificationInput) (*mcp.CallToolResult, sendPushoverNotificationOutput, error) {
 	s.logAccess(ctx, "send_pushover_notification")
 	result, err := s.pushover.Send(ctx, pushover.SendParams{
 		Message: input.Message, Title: input.Title, Priority: input.Priority, URL: input.URL,
+		Retry: input.Retry, Expire: input.Expire,
 	})
 	if err != nil {
 		s.logError(ctx, "send_pushover_notification", err)
 		return nil, sendPushoverNotificationOutput{}, safePushoverToolError(err)
 	}
-	return nil, sendPushoverNotificationOutput{Sent: true, Request: result.Request}, nil
+	return nil, sendPushoverNotificationOutput{Sent: true, Request: result.Request, Receipt: result.Receipt}, nil
 }
 
 func safePushoverToolError(err error) error {
