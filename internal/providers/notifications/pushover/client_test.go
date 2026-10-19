@@ -23,7 +23,7 @@ func TestSendPostsPushoverForm(t *testing.T) {
 				t.Fatalf("%s = %q, want %q", key, got, want)
 			}
 		}
-		if form.Has("retry") || form.Has("expire") {
+		if form.Has("retry") || form.Has("expire") || form.Has("sound") {
 			t.Fatalf("non-emergency form has retry/expire: %v", form)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -76,5 +76,64 @@ func TestSendEmergencyPostsRetryExpireAndReturnsReceipt(t *testing.T) {
 	})
 	if err != nil || result.Request != "request-id" || result.Receipt != "receipt-id" {
 		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+}
+
+func TestSendPostsSound(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(body))
+		if got := form.Get("sound"); got != "siren" {
+			t.Fatalf("sound = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"status":1,"request":"request-id"}`))
+	}))
+	defer server.Close()
+	client := &Client{endpoint: server.URL, http: server.Client()}
+
+	if _, err := client.Send(context.Background(), Credentials{}, SendParams{Message: "hello", Sound: "siren"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSoundsListsSortedByName(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("token") != "app" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		_, _ = w.Write([]byte(`{"status":1,"sounds":{"siren":"Siren","pushover":"Pushover (default)","bike":"Bike"}}`))
+	}))
+	defer server.Close()
+	client := &Client{soundsEndpoint: server.URL, http: server.Client()}
+
+	sounds, err := client.Sounds(context.Background(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Sound{{ID: "bike", Name: "Bike"}, {ID: "pushover", Name: "Pushover (default)"}, {ID: "siren", Name: "Siren"}}
+	if len(sounds) != len(want) {
+		t.Fatalf("sounds = %+v", sounds)
+	}
+	for i := range want {
+		if sounds[i] != want[i] {
+			t.Fatalf("sounds = %+v, want %+v", sounds, want)
+		}
+	}
+}
+
+func TestSoundsReturnsPushoverError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"status":0,"errors":["application token is invalid"]}`))
+	}))
+	defer server.Close()
+	client := &Client{soundsEndpoint: server.URL, http: server.Client()}
+
+	_, err := client.Sounds(context.Background(), "bad")
+	if err == nil || !strings.Contains(err.Error(), "application token is invalid") {
+		t.Fatalf("err = %v", err)
 	}
 }

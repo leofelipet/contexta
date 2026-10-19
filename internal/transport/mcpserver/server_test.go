@@ -436,8 +436,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 56 {
-		t.Fatalf("tools = %d, want 56 with email and pushover", len(tools.Tools))
+	if len(tools.Tools) != 57 {
+		t.Fatalf("tools = %d, want 57 with email and pushover", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {

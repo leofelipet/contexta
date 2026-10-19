@@ -199,6 +199,7 @@ func New(options Options) http.Handler {
 	api.HandleFunc("POST /api/v1/integrations/uazapi/configure-webhook", handler.configureUAZAPIWebhook)
 	api.HandleFunc("GET /api/v1/integrations/pushover", handler.pushoverStatus)
 	api.HandleFunc("PATCH /api/v1/integrations/pushover", handler.configurePushover)
+	api.HandleFunc("GET /api/v1/integrations/pushover/sounds", handler.pushoverSounds)
 	api.HandleFunc("POST /api/v1/integrations/pushover/send", handler.sendPushover)
 	api.HandleFunc("GET /api/v1/email-accounts", handler.listEmailAccounts)
 	api.HandleFunc("POST /api/v1/email-accounts", handler.createEmailAccount)

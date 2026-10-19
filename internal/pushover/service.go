@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	emailcrypto "github.com/leofelipet/contexta/internal/email/crypto"
@@ -42,7 +43,13 @@ type Store interface {
 
 type Client interface {
 	Send(context.Context, provider.Credentials, provider.SendParams) (provider.Result, error)
+	Sounds(context.Context, string) ([]provider.Sound, error)
 }
+
+type Sound = provider.Sound
+
+// soundPattern only checks the shape of a sound identifier; Pushover rejects unknown sounds.
+var soundPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type Service struct {
 	store  Store
@@ -131,6 +138,10 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 	if err != nil {
 		return SendResult{}, err
 	}
+	sound := strings.TrimSpace(params.Sound)
+	if sound != "" && !soundPattern.MatchString(sound) {
+		return SendResult{}, ErrInvalidArgument
+	}
 	if err := s.requireKey(); err != nil {
 		return SendResult{}, err
 	}
@@ -151,12 +162,32 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 	}
 	result, err := s.client.Send(ctx, provider.Credentials{AppToken: string(appToken), UserKey: string(userKey)}, provider.SendParams{
 		Message: message, Title: strings.TrimSpace(params.Title), Priority: priority, URL: strings.TrimSpace(params.URL),
-		Retry: retry, Expire: expire,
+		Sound: sound, Retry: retry, Expire: expire,
 	})
 	if err != nil {
 		return SendResult{}, &ProviderError{Err: err}
 	}
 	return SendResult{Request: result.Request, Receipt: result.Receipt}, nil
+}
+
+// Sounds lists the notification sounds available to the configured application.
+func (s *Service) Sounds(ctx context.Context) ([]Sound, error) {
+	if err := s.requireKey(); err != nil {
+		return nil, err
+	}
+	_, appCiphertext, _, err := s.store.GetPushoverCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+	appToken, err := emailcrypto.Decrypt(s.key, appCiphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt pushover app token: %w", err)
+	}
+	sounds, err := s.client.Sounds(ctx, string(appToken))
+	if err != nil {
+		return nil, &ProviderError{Err: err}
+	}
+	return sounds, nil
 }
 
 // emergencyTiming resolves retry/expire, which Pushover only accepts for emergency priority.

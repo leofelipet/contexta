@@ -33,6 +33,10 @@ func (c *recordingPushoverClient) Send(_ context.Context, _ provider.Credentials
 	return provider.Result{Request: "request-id", Receipt: "receipt-id"}, nil
 }
 
+func (c *recordingPushoverClient) Sounds(context.Context, string) ([]provider.Sound, error) {
+	return []provider.Sound{{ID: "siren", Name: "Siren"}}, nil
+}
+
 func TestMCPSendPushoverEmergencyReturnsReceipt(t *testing.T) {
 	t.Parallel()
 	key := make([]byte, 32)
@@ -77,14 +81,14 @@ func TestMCPSendPushoverEmergencyReturnsReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"retry"`, `"expire"`, "to 2 (emergency)"} {
+	for _, want := range []string{`"retry"`, `"expire"`, `"sound"`, "to 2 (emergency)"} {
 		if !strings.Contains(string(schema), want) {
 			t.Fatalf("input schema missing %s: %s", want, schema)
 		}
 	}
 
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "send_pushover_notification", Arguments: map[string]any{"message": "hello", "priority": 2, "retry": 45, "expire": 900},
+		Name: "send_pushover_notification", Arguments: map[string]any{"message": "hello", "priority": 2, "retry": 45, "expire": 900, "sound": "siren"},
 	})
 	if err != nil || result.IsError {
 		t.Fatalf("result = %#v, err = %v", result, err)
@@ -96,7 +100,7 @@ func TestMCPSendPushoverEmergencyReturnsReceipt(t *testing.T) {
 	if string(output) != `{"receipt":"receipt-id","request":"request-id","sent":true}` {
 		t.Fatalf("output = %s", output)
 	}
-	if pushoverClient.params.Priority != 2 || pushoverClient.params.Retry != 45 || pushoverClient.params.Expire != 900 {
+	if pushoverClient.params.Priority != 2 || pushoverClient.params.Retry != 45 || pushoverClient.params.Expire != 900 || pushoverClient.params.Sound != "siren" {
 		t.Fatalf("params = %+v", pushoverClient.params)
 	}
 
@@ -105,5 +109,17 @@ func TestMCPSendPushoverEmergencyReturnsReceipt(t *testing.T) {
 	})
 	if err != nil || !result.IsError {
 		t.Fatalf("retry without emergency result = %#v, err = %v", result, err)
+	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_pushover_sounds"})
+	if err != nil || result.IsError {
+		t.Fatalf("list_pushover_sounds result = %#v, err = %v", result, err)
+	}
+	output, err = json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != `{"sounds":[{"id":"siren","name":"Siren"}]}` {
+		t.Fatalf("list_pushover_sounds output = %s", output)
 	}
 }

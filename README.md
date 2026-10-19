@@ -90,7 +90,7 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 ## Pushover
 
-Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `2`), and optional URL. Emergency priority `2` accepts optional `retry` (seconds, minimum 30, default 60) and `expire` (seconds, at most 10800 and not less than `retry`, default 3600) and returns the Pushover `receipt`; `retry`/`expire` are rejected for other priorities. Contexta does not poll receipts.
+Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `2`), optional URL, and optional `sound` (a sound id; empty keeps the recipient's default tone). `GET /api/v1/integrations/pushover/sounds` and the MCP `list_pushover_sounds` tool list the built-in and custom sounds available to the configured application. Emergency priority `2` accepts optional `retry` (seconds, minimum 30, default 60) and `expire` (seconds, at most 10800 and not less than `retry`, default 3600) and returns the Pushover `receipt`; `retry`/`expire` are rejected for other priorities. Contexta does not poll receipts.
 
 ## Companies
 
@@ -163,6 +163,7 @@ GET /api/v1/dashboard
 GET /api/v1/integrations/uazapi
 POST /api/v1/integrations/uazapi/configure-webhook
 GET /api/v1/integrations/pushover
+GET /api/v1/integrations/pushover/sounds
 PATCH /api/v1/integrations/pushover
 POST /api/v1/integrations/pushover/send
 GET /api/v1/companies
@@ -247,6 +248,7 @@ move_email
 delete_email
 send_email
 send_pushover_notification
+list_pushover_sounds
 ```
 
 Message read state is tracked independently for each agent `consumer_id`. Use `list_unread_messages` to fetch pending work without changing state, then call `acknowledge_messages` only after processing succeeds. `search_messages` accepts optional `consumer_id` and `read_state` (`all`, `read`, or `unread`) filters. Existing search and conversation tools always remain available for historical access.

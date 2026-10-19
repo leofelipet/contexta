@@ -20,6 +20,7 @@ type SendParams struct {
 	Title    string
 	Priority *int
 	URL      string
+	Sound    string
 	Retry    *int
 	Expire   *int
 }

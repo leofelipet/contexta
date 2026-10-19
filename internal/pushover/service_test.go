@@ -3,6 +3,7 @@ package pushover
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	emailcrypto "github.com/leofelipet/contexta/internal/email/crypto"
@@ -36,7 +37,16 @@ func (f *fakeStore) UpsertPushoverSettings(_ context.Context, enabled bool, app,
 type fakeClient struct {
 	credentials provider.Credentials
 	params      provider.SendParams
+	soundsToken string
 	err         error
+}
+
+func (f *fakeClient) Sounds(_ context.Context, appToken string) ([]provider.Sound, error) {
+	f.soundsToken = appToken
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []provider.Sound{{ID: "siren", Name: "Siren"}}, nil
 }
 
 func (f *fakeClient) Send(_ context.Context, credentials provider.Credentials, params provider.SendParams) (provider.Result, error) {
@@ -103,6 +113,8 @@ func TestSendRejectsInvalidNotification(t *testing.T) {
 		"default expire below retry": {Message: "hello", Priority: intPtr(2), Retry: intPtr(7200), Expire: nil},
 		"retry without emergency":    {Message: "hello", Priority: intPtr(1), Retry: intPtr(60)},
 		"expire without emergency":   {Message: "hello", Expire: intPtr(3600)},
+		"sound with spaces":          {Message: "hello", Sound: "space alarm"},
+		"sound too long":             {Message: "hello", Sound: strings.Repeat("a", 65)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := service.Send(context.Background(), params)
@@ -173,5 +185,40 @@ func TestSendNonEmergencyPrioritiesUnchanged(t *testing.T) {
 		if client.params.Retry != 0 || client.params.Expire != 0 {
 			t.Fatalf("priority %v: params = %+v", priority, client.params)
 		}
+	}
+}
+
+func TestSendPassesTrimmedSound(t *testing.T) {
+	t.Parallel()
+	for input, want := range map[string]string{"": "", " siren ": "siren", "custom_Sound-1": "custom_Sound-1"} {
+		client := &fakeClient{}
+		service := newConfiguredService(t, client)
+		if _, err := service.Send(context.Background(), SendParams{Message: "hello", Sound: input}); err != nil {
+			t.Fatalf("sound %q: err = %v", input, err)
+		}
+		if client.params.Sound != want {
+			t.Fatalf("sound %q: params.Sound = %q, want %q", input, client.params.Sound, want)
+		}
+	}
+}
+
+func TestSoundsUsesDecryptedAppToken(t *testing.T) {
+	t.Parallel()
+	client := &fakeClient{}
+	sounds, err := newConfiguredService(t, client).Sounds(context.Background())
+	if err != nil || len(sounds) != 1 || sounds[0].ID != "siren" || client.soundsToken != "app" {
+		t.Fatalf("sounds = %+v, token = %q, err = %v", sounds, client.soundsToken, err)
+	}
+}
+
+func TestSoundsErrors(t *testing.T) {
+	t.Parallel()
+	_, err := NewService(&fakeStore{}, make([]byte, 32), &fakeClient{}).Sounds(context.Background())
+	if !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("not configured err = %v", err)
+	}
+	_, err = newConfiguredService(t, &fakeClient{err: errors.New("unavailable")}).Sounds(context.Background())
+	if !errors.Is(err, ErrProvider) {
+		t.Fatalf("provider err = %v", err)
 	}
 }
