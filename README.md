@@ -92,6 +92,12 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `2`), optional URL, and optional `sound` (a sound id; empty keeps the recipient's default tone). `GET /api/v1/integrations/pushover/sounds` and the MCP `list_pushover_sounds` tool list the built-in and custom sounds available to the configured application. Emergency priority `2` accepts optional `retry` (seconds, minimum 30, default 60) and `expire` (seconds, at most 10800 and not less than `retry`, default 3600) and returns the Pushover `receipt`; `retry`/`expire` are rejected for other priorities. Contexta does not poll receipts.
 
+### Reminders and scheduled notifications
+
+- **One-off reminders** (`/api/v1/reminders`, MCP `create_reminder`) send a Pushover notification at `send_at`. `send_at` is RFC3339 with offset or a local `YYYY-MM-DDTHH:MM` interpreted in `timezone` (default `America/Sao_Paulo`). Each reminder has a `message` (required, up to 1024 characters), optional `title`, `priority` (`-2` through `2`; emergency uses the default retry/expire), and `sound`. The worker checks for due reminders every minute. A failed delivery is retried on the next ticks up to 3 attempts, then the reminder is marked `failed` with `last_error`. Only `pending` reminders can be changed; deleting a pending reminder cancels it.
+- **Recurring notifications**: a task schedule with `notify=true` also sends a Pushover notification each time it creates a task, using the schedule title as title and its description (or title) as message, with `notify_priority` and `notify_sound`. A failed notification is logged and does not prevent the task.
+- Both require the Pushover integration to be configured and enabled at delivery time. A notification is sent before its run commits, so a crash in between can resend it on the next tick, but replicas never double-send.
+
 ## Companies
 
 Companies group tasks, recurring schedules, and WhatsApp contacts. A company has a unique name (case-insensitive) and free-text notes; each task, schedule, and contact links to at most one company through `company_id`.
@@ -111,6 +117,7 @@ The task scheduler turns cron schedules into tasks. A background worker ticks ev
 - `skip_if_open=true` skips an occurrence while the task created by the previous run is still open.
 - Each schedule is claimed with `FOR UPDATE SKIP LOCKED`, so multiple replicas never create duplicates. Set `SCHEDULER_ENABLED=false` to stop the worker on a replica.
 - Deleting a schedule keeps the tasks it already created.
+- `notify=true` also sends a Pushover notification on each run; see [Reminders and scheduled notifications](#reminders-and-scheduled-notifications).
 
 ## Bulk actions
 
@@ -187,6 +194,11 @@ POST /api/v1/task-schedules/bulk-update
 GET /api/v1/task-schedules/{id}
 PATCH /api/v1/task-schedules/{id}
 DELETE /api/v1/task-schedules/{id}
+GET /api/v1/reminders
+POST /api/v1/reminders
+GET /api/v1/reminders/{id}
+PATCH /api/v1/reminders/{id}
+DELETE /api/v1/reminders/{id}
 GET /api/v1/mcp/status
 GET /api/v1/activity
 ```
@@ -235,7 +247,7 @@ delete_memories
 remove_denylist_entries
 ```
 
-Email tools, registered when the email service is available:
+Email and Pushover tools, registered when the email and Pushover services are available:
 
 ```text
 list_email_accounts
@@ -249,6 +261,11 @@ delete_email
 send_email
 send_pushover_notification
 list_pushover_sounds
+list_reminders
+get_reminder
+create_reminder
+update_reminder
+delete_reminder
 ```
 
 Message read state is tracked independently for each agent `consumer_id`. Use `list_unread_messages` to fetch pending work without changing state, then call `acknowledge_messages` only after processing succeeds. `search_messages` accepts optional `consumer_id` and `read_state` (`all`, `read`, or `unread`) filters. Existing search and conversation tools always remain available for historical access.

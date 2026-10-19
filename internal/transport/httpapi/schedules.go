@@ -20,6 +20,9 @@ type createTaskScheduleRequest struct {
 	DueInMinutes   *int   `json:"due_in_minutes"`
 	ConversationID string `json:"conversation_id"`
 	ContactID      string `json:"contact_id"`
+	Notify         bool   `json:"notify"`
+	NotifyPriority *int   `json:"notify_priority"`
+	NotifySound    string `json:"notify_sound"`
 }
 
 type updateTaskScheduleRequest struct {
@@ -33,6 +36,9 @@ type updateTaskScheduleRequest struct {
 	DueInMinutes   *int    `json:"due_in_minutes"`
 	ConversationID *string `json:"conversation_id"`
 	ContactID      *string `json:"contact_id"`
+	Notify         *bool   `json:"notify"`
+	NotifyPriority *int    `json:"notify_priority"`
+	NotifySound    *string `json:"notify_sound"`
 }
 
 func (h *handler) listTaskSchedules(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +83,7 @@ func (h *handler) createTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		Cron: request.Cron, Timezone: request.Timezone, Enabled: request.Enabled, SkipIfOpen: request.SkipIfOpen,
 		Title: request.Title, Description: request.Description, CompanyID: request.CompanyID,
 		DueInMinutes: request.DueInMinutes, ConversationID: request.ConversationID, ContactID: request.ContactID,
+		Notify: request.Notify, NotifyPriority: request.NotifyPriority, NotifySound: request.NotifySound,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -101,6 +108,7 @@ func (h *handler) updateTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		Cron: request.Cron, Timezone: request.Timezone, Enabled: request.Enabled, SkipIfOpen: request.SkipIfOpen,
 		Title: request.Title, Description: request.Description, CompanyID: request.CompanyID,
 		DueInMinutes: request.DueInMinutes, ConversationID: request.ConversationID, ContactID: request.ContactID,
+		Notify: request.Notify, NotifyPriority: request.NotifyPriority, NotifySound: request.NotifySound,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)

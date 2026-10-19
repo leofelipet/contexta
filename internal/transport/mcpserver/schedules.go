@@ -13,7 +13,7 @@ const cronHelp = "Standard 5-field cron (minute hour day-of-month month day-of-w
 func (s *server) addScheduleTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_task_schedules", "List recurring task schedules with optional enabled filter and text query (matches title, description, or numeric ID)."), s.listTaskSchedules)
 	mcp.AddTool(mcpServer, readOnlyTool("get_task_schedule", "Get one recurring task schedule by numeric ID, including next_run_at, last_run_at, and last_task_id."), s.getTaskSchedule)
-	mcp.AddTool(mcpServer, localWriteTool("create_task_schedule", "Create a recurring task schedule: on each cron occurrence a new pending task is created from this template. "+cronHelp), s.createTaskSchedule)
+	mcp.AddTool(mcpServer, localWriteTool("create_task_schedule", "Create a recurring task schedule: on each cron occurrence a new pending task is created from this template. Set notify=true to also send a Pushover notification (title = task title, message = description or title) on each occurrence. For a one-off notification use create_reminder. "+cronHelp), s.createTaskSchedule)
 	mcp.AddTool(mcpServer, localWriteTool("update_task_schedule", "Update a recurring task schedule. Changing cron or timezone, or re-enabling, recomputes next_run_at. Set enabled=false to pause. Already created tasks are not changed."), s.updateTaskSchedule)
 	mcp.AddTool(mcpServer, localWriteTool("delete_task_schedule", "Permanently delete a recurring task schedule. Tasks it already created are kept."), s.deleteTaskSchedule)
 }
@@ -72,6 +72,9 @@ type createTaskScheduleInput struct {
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID to link on each created task."`
 	SkipIfOpen     bool   `json:"skip_if_open,omitempty" jsonschema:"When true, skip an occurrence if the task created by the previous run is still open (pending, in_progress, or blocked)."`
 	Enabled        *bool  `json:"enabled,omitempty" jsonschema:"Defaults to true. Set false to create the schedule paused."`
+	Notify         bool   `json:"notify,omitempty" jsonschema:"When true, each occurrence also sends a Pushover notification. Requires the Pushover integration."`
+	NotifyPriority *int   `json:"notify_priority,omitempty" jsonschema:"Pushover priority of the notification, -2 (lowest) to 2 (emergency, repeats until acknowledged); defaults to 0."`
+	NotifySound    string `json:"notify_sound,omitempty" jsonschema:"Optional Pushover sound id from list_pushover_sounds; empty uses the recipient's default tone."`
 }
 
 func (s *server) createTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest, input createTaskScheduleInput) (*mcp.CallToolResult, taskScheduleOutput, error) {
@@ -80,6 +83,7 @@ func (s *server) createTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest,
 		Cron: input.Cron, Timezone: input.Timezone, Enabled: input.Enabled, SkipIfOpen: input.SkipIfOpen,
 		Title: input.Title, Description: input.Description, CompanyID: input.CompanyID,
 		DueInMinutes: input.DueInMinutes, ConversationID: input.ConversationID, ContactID: input.ContactID,
+		Notify: input.Notify, NotifyPriority: input.NotifyPriority, NotifySound: input.NotifySound,
 	})
 	if err != nil {
 		s.logError(ctx, "create_task_schedule", err)
@@ -100,6 +104,9 @@ type updateTaskScheduleInput struct {
 	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
 	SkipIfOpen     *bool   `json:"skip_if_open,omitempty" jsonschema:"Skip occurrences while the previous task is still open."`
 	Enabled        *bool   `json:"enabled,omitempty" jsonschema:"false pauses the schedule; true resumes it from the next occurrence."`
+	Notify         *bool   `json:"notify,omitempty" jsonschema:"Enable or disable the Pushover notification sent on each occurrence."`
+	NotifyPriority *int    `json:"notify_priority,omitempty" jsonschema:"Pushover priority of the notification, -2 to 2."`
+	NotifySound    *string `json:"notify_sound,omitempty" jsonschema:"Pushover sound id. Empty string uses the recipient's default tone."`
 }
 
 func (s *server) updateTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest, input updateTaskScheduleInput) (*mcp.CallToolResult, taskScheduleOutput, error) {
@@ -108,6 +115,7 @@ func (s *server) updateTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest,
 		Cron: input.Cron, Timezone: input.Timezone, Enabled: input.Enabled, SkipIfOpen: input.SkipIfOpen,
 		Title: input.Title, Description: input.Description, CompanyID: input.CompanyID,
 		DueInMinutes: input.DueInMinutes, ConversationID: input.ConversationID, ContactID: input.ContactID,
+		Notify: input.Notify, NotifyPriority: input.NotifyPriority, NotifySound: input.NotifySound,
 	})
 	if err != nil {
 		s.logError(ctx, "update_task_schedule", err)
@@ -129,10 +137,10 @@ func (s *server) deleteTaskSchedule(ctx context.Context, _ *mcp.CallToolRequest,
 	return nil, deleteTaskScheduleOutput{Deleted: true}, nil
 }
 
-// safeScheduleToolError surfaces cron validation details so the agent can fix
-// the expression; everything else goes through the generic mapping.
+// safeScheduleToolError surfaces cron and notification validation details so
+// the agent can fix its input; everything else goes through the generic mapping.
 func safeScheduleToolError(err error) error {
-	if errors.Is(err, schedules.ErrInvalidCron) {
+	if errors.Is(err, schedules.ErrInvalidCron) || errors.Is(err, schedules.ErrInvalidNotification) {
 		return err
 	}
 	return safeToolError(err)

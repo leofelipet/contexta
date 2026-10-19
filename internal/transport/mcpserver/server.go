@@ -64,6 +64,11 @@ type Store interface {
 	DeleteTaskSchedule(context.Context, string) error
 	DeleteTaskSchedules(context.Context, []string) (int, error)
 	SetTaskSchedulesEnabled(ctx context.Context, ids []string, enabled bool) (int, error)
+	ListReminders(context.Context, schedules.ReminderListParams) (schedules.ReminderPage, error)
+	GetReminder(context.Context, string) (schedules.Reminder, error)
+	CreateReminder(context.Context, schedules.ReminderCreateParams) (schedules.Reminder, error)
+	UpdateReminder(context.Context, string, schedules.ReminderUpdateParams) (schedules.Reminder, error)
+	DeleteReminder(context.Context, string) error
 	RecordActivity(context.Context, activity.Record) error
 }
 

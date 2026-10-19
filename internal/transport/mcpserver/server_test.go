@@ -21,6 +21,7 @@ import (
 	smtpmail "github.com/leofelipet/contexta/internal/providers/email/smtp"
 	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/schedules"
+	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -126,6 +127,19 @@ func (fakeStore) AttachTaskMemory(_ context.Context, taskID, _ string) (tasks.Ta
 func (fakeStore) DetachTaskMemory(_ context.Context, taskID, _ string) (tasks.Task, error) {
 	return tasks.Task{ID: taskID, Title: "Sample"}, nil
 }
+func (fakeStore) ListReminders(context.Context, schedules.ReminderListParams) (schedules.ReminderPage, error) {
+	return schedules.ReminderPage{}, nil
+}
+func (fakeStore) GetReminder(_ context.Context, id string) (schedules.Reminder, error) {
+	return schedules.Reminder{ID: id, Message: "Banheiro", Status: schedules.ReminderPending}, nil
+}
+func (fakeStore) CreateReminder(_ context.Context, params schedules.ReminderCreateParams) (schedules.Reminder, error) {
+	return schedules.Reminder{ID: "1", Message: params.Message, Sound: params.Sound, SendAt: params.SendAt, Status: schedules.ReminderPending}, nil
+}
+func (fakeStore) UpdateReminder(context.Context, string, schedules.ReminderUpdateParams) (schedules.Reminder, error) {
+	return schedules.Reminder{}, postgres.ErrConflict
+}
+func (fakeStore) DeleteReminder(context.Context, string) error { return nil }
 func (fakeStore) ListTaskSchedules(context.Context, schedules.ListParams) (schedules.Page, error) {
 	return schedules.Page{}, nil
 }
@@ -436,8 +450,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 57 {
-		t.Fatalf("tools = %d, want 57 with email and pushover", len(tools.Tools))
+	if len(tools.Tools) != 62 {
+		t.Fatalf("tools = %d, want 62 with email and pushover", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {

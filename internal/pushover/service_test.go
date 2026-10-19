@@ -8,6 +8,7 @@ import (
 
 	emailcrypto "github.com/leofelipet/contexta/internal/email/crypto"
 	provider "github.com/leofelipet/contexta/internal/providers/notifications/pushover"
+	"github.com/leofelipet/contexta/internal/schedules"
 )
 
 type fakeStore struct {
@@ -220,5 +221,21 @@ func TestSoundsErrors(t *testing.T) {
 	_, err = newConfiguredService(t, &fakeClient{err: errors.New("unavailable")}).Sounds(context.Background())
 	if !errors.Is(err, ErrProvider) {
 		t.Fatalf("provider err = %v", err)
+	}
+}
+
+func TestNotifySendsSchedulerNotification(t *testing.T) {
+	t.Parallel()
+	client := &fakeClient{}
+	err := newConfiguredService(t, client).Notify(context.Background(), schedules.Notification{Title: "Lembrete", Message: "Banheiro", Priority: 2, Sound: "siren"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.params.Title != "Lembrete" || client.params.Message != "Banheiro" || client.params.Priority != 2 || client.params.Sound != "siren" ||
+		client.params.Retry != DefaultEmergencyRetry || client.params.Expire != DefaultEmergencyExpire {
+		t.Fatalf("params = %+v", client.params)
+	}
+	if err := NewService(&fakeStore{}, make([]byte, 32), client).Notify(context.Background(), schedules.Notification{Message: "x"}); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("not configured err = %v", err)
 	}
 }

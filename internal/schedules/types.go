@@ -17,6 +17,9 @@ type Schedule struct {
 	DueInMinutes   *int       `json:"due_in_minutes,omitempty"`
 	ConversationID string     `json:"conversation_id,omitempty"`
 	ContactID      string     `json:"contact_id,omitempty"`
+	Notify         bool       `json:"notify"`
+	NotifyPriority int        `json:"notify_priority"`
+	NotifySound    string     `json:"notify_sound,omitempty"`
 	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
 	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
 	LastTaskID     string     `json:"last_task_id,omitempty"`
@@ -36,6 +39,9 @@ type CreateParams struct {
 	DueInMinutes   *int
 	ConversationID string
 	ContactID      string
+	Notify         bool
+	NotifyPriority *int
+	NotifySound    string
 }
 
 // UpdateParams uses pointers to distinguish omitted fields from clears.
@@ -52,6 +58,9 @@ type UpdateParams struct {
 	DueInMinutes   *int
 	ConversationID *string
 	ContactID      *string
+	Notify         *bool
+	NotifyPriority *int
+	NotifySound    *string
 }
 
 type ListParams struct {
@@ -72,4 +81,6 @@ type RunResult struct {
 	Created []string // task IDs created
 	Skipped []string // schedule IDs skipped because their last task is still open
 	Failed  []string // schedule IDs disabled because their cron could not be evaluated
+	// NotifyFailed holds schedule IDs whose task was created but whose Pushover notification failed.
+	NotifyFailed []string
 }

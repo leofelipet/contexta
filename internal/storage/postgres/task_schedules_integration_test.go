@@ -38,7 +38,7 @@ func TestTaskSchedules(t *testing.T) {
 	}
 	runNow := func() schedules.RunResult {
 		t.Helper()
-		result, err := store.RunDueTaskSchedules(ctx, time.Now().UTC())
+		result, err := store.RunDueTaskSchedules(ctx, time.Now().UTC(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +182,7 @@ func TestTaskSchedules(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 8 {
 			wg.Go(func() {
-				if _, err := store.RunDueTaskSchedules(ctx, time.Now().UTC()); err != nil {
+				if _, err := store.RunDueTaskSchedules(ctx, time.Now().UTC(), nil); err != nil {
 					t.Error(err)
 				}
 			})
@@ -191,6 +191,64 @@ func TestTaskSchedules(t *testing.T) {
 		page, err := store.ListTasks(ctx, tasks.ListParams{ScheduleID: schedule.ID})
 		if err != nil || len(page.Tasks) != 1 {
 			t.Fatalf("tasks = %d, err = %v", len(page.Tasks), err)
+		}
+	})
+
+	t.Run("notify validates and sends a notification with the task", func(t *testing.T) {
+		badPriority := 3
+		if _, err := store.CreateTaskSchedule(ctx, schedules.CreateParams{Cron: "@daily", Title: "Bad", Notify: true, NotifyPriority: &badPriority}); !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, schedules.ErrInvalidNotification) {
+			t.Fatalf("bad priority err = %v", err)
+		}
+		if _, err := store.CreateTaskSchedule(ctx, schedules.CreateParams{Cron: "@daily", Title: "Bad", Notify: true, NotifySound: "space alarm"}); !errors.Is(err, schedules.ErrInvalidNotification) {
+			t.Fatalf("bad sound err = %v", err)
+		}
+		priority := 1
+		schedule, err := store.CreateTaskSchedule(ctx, schedules.CreateParams{
+			Cron: "0 13 * * *", Title: "Banheiro " + time.Now().Format(time.RFC3339Nano), Description: "Hora de ir ao banheiro",
+			Notify: true, NotifyPriority: &priority, NotifySound: " siren ",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !schedule.Notify || schedule.NotifyPriority != 1 || schedule.NotifySound != "siren" {
+			t.Fatalf("schedule = %#v", schedule)
+		}
+		makeDue(schedule.ID)
+		var (
+			mu   sync.Mutex
+			sent []schedules.Notification
+		)
+		notify := func(_ context.Context, notification schedules.Notification) error {
+			mu.Lock()
+			defer mu.Unlock()
+			sent = append(sent, notification)
+			return nil
+		}
+		result, err := store.RunDueTaskSchedules(ctx, time.Now().UTC(), notify)
+		if err != nil || len(result.Created) == 0 {
+			t.Fatalf("result = %#v, err = %v", result, err)
+		}
+		want := schedules.Notification{Title: schedule.Title, Message: "Hora de ir ao banheiro", Priority: 1, Sound: "siren"}
+		if !slices.Contains(sent, want) {
+			t.Fatalf("sent = %#v, want %#v", sent, want)
+		}
+
+		// A failed notification still creates the task and is reported.
+		makeDue(schedule.ID)
+		failing := func(context.Context, schedules.Notification) error { return errors.New("pushover is not configured") }
+		result, err = store.RunDueTaskSchedules(ctx, time.Now().UTC(), failing)
+		if err != nil || !slices.Contains(result.NotifyFailed, schedule.ID) {
+			t.Fatalf("failing result = %#v, err = %v", result, err)
+		}
+		page, err := store.ListTasks(ctx, tasks.ListParams{ScheduleID: schedule.ID})
+		if err != nil || len(page.Tasks) != 2 {
+			t.Fatalf("tasks = %d, err = %v", len(page.Tasks), err)
+		}
+
+		off := false
+		updated, err := store.UpdateTaskSchedule(ctx, schedule.ID, schedules.UpdateParams{Notify: &off})
+		if err != nil || updated.Notify || updated.NotifySound != "siren" {
+			t.Fatalf("updated = %#v, err = %v", updated, err)
 		}
 	})
 

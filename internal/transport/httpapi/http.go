@@ -86,6 +86,11 @@ type Store interface {
 	DeleteTaskSchedule(context.Context, string) error
 	DeleteTaskSchedules(context.Context, []string) (int, error)
 	SetTaskSchedulesEnabled(ctx context.Context, ids []string, enabled bool) (int, error)
+	ListReminders(context.Context, schedules.ReminderListParams) (schedules.ReminderPage, error)
+	GetReminder(context.Context, string) (schedules.Reminder, error)
+	CreateReminder(context.Context, schedules.ReminderCreateParams) (schedules.Reminder, error)
+	UpdateReminder(context.Context, string, schedules.ReminderUpdateParams) (schedules.Reminder, error)
+	DeleteReminder(context.Context, string) error
 	SystemOverview(context.Context) (admin.SystemOverview, error)
 	ListAdminPasskeys(context.Context) ([]passkeys.Passkey, error)
 	CreateAdminPasskey(context.Context, passkeys.CreateParams) (passkeys.Passkey, error)
@@ -188,6 +193,11 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/task-schedules/{id}", handler.getTaskSchedule)
 	api.HandleFunc("PATCH /api/v1/task-schedules/{id}", handler.updateTaskSchedule)
 	api.HandleFunc("DELETE /api/v1/task-schedules/{id}", handler.deleteTaskSchedule)
+	api.HandleFunc("GET /api/v1/reminders", handler.listReminders)
+	api.HandleFunc("POST /api/v1/reminders", handler.createReminder)
+	api.HandleFunc("GET /api/v1/reminders/{id}", handler.getReminder)
+	api.HandleFunc("PATCH /api/v1/reminders/{id}", handler.updateReminder)
+	api.HandleFunc("DELETE /api/v1/reminders/{id}", handler.deleteReminder)
 	api.HandleFunc("GET /api/v1/memories", handler.listMemories)
 	api.HandleFunc("POST /api/v1/memories/search", handler.searchMemories)
 	api.HandleFunc("GET /api/v1/memories/{id}", handler.getMemory)

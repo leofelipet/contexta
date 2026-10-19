@@ -122,4 +122,32 @@ func TestMCPSendPushoverEmergencyReturnsReceipt(t *testing.T) {
 	if string(output) != `{"sounds":[{"id":"siren","name":"Siren"}]}` {
 		t.Fatalf("list_pushover_sounds output = %s", output)
 	}
+
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "create_reminder", Arguments: map[string]any{"message": "Ir ao banheiro", "send_at": "2026-10-19T13:00", "sound": "siren"},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("create_reminder result = %#v, err = %v", result, err)
+	}
+	output, err = json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), `"send_at":"2026-10-19T16:00:00Z"`) || !strings.Contains(string(output), `"sound":"siren"`) {
+		t.Fatalf("create_reminder output = %s", output)
+	}
+
+	for name, arguments := range map[string]map[string]any{
+		"create_reminder": {"message": "x", "send_at": "amanhã"},
+		"update_reminder": {"id": "1", "message": "x"},
+	} {
+		result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: arguments})
+		if err != nil || !result.IsError {
+			t.Fatalf("%s result = %#v, err = %v", name, result, err)
+		}
+		text := result.Content[0].(*mcp.TextContent).Text
+		if !strings.Contains(text, "send_at must be RFC3339") && !strings.Contains(text, "only pending reminders") {
+			t.Fatalf("%s error = %q", name, text)
+		}
+	}
 }

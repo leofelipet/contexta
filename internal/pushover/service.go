@@ -9,6 +9,7 @@ import (
 
 	emailcrypto "github.com/leofelipet/contexta/internal/email/crypto"
 	provider "github.com/leofelipet/contexta/internal/providers/notifications/pushover"
+	"github.com/leofelipet/contexta/internal/schedules"
 )
 
 var (
@@ -20,6 +21,7 @@ var (
 )
 
 const (
+	MinPriority            = -2
 	EmergencyPriority      = 2
 	DefaultEmergencyRetry  = 60
 	DefaultEmergencyExpire = 3600
@@ -50,6 +52,11 @@ type Sound = provider.Sound
 
 // soundPattern only checks the shape of a sound identifier; Pushover rejects unknown sounds.
 var soundPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// ValidSound reports whether sound is empty (recipient's default tone) or a well-formed sound id.
+func ValidSound(sound string) bool {
+	return sound == "" || soundPattern.MatchString(sound)
+}
 
 type Service struct {
 	store  Store
@@ -131,7 +138,7 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 	if params.Priority != nil {
 		priority = *params.Priority
 	}
-	if priority < -2 || priority > EmergencyPriority {
+	if priority < MinPriority || priority > EmergencyPriority {
 		return SendResult{}, ErrInvalidArgument
 	}
 	retry, expire, err := emergencyTiming(priority, params.Retry, params.Expire)
@@ -139,7 +146,7 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 		return SendResult{}, err
 	}
 	sound := strings.TrimSpace(params.Sound)
-	if sound != "" && !soundPattern.MatchString(sound) {
+	if !ValidSound(sound) {
 		return SendResult{}, ErrInvalidArgument
 	}
 	if err := s.requireKey(); err != nil {
@@ -168,6 +175,15 @@ func (s *Service) Send(ctx context.Context, params SendParams) (SendResult, erro
 		return SendResult{}, &ProviderError{Err: err}
 	}
 	return SendResult{Request: result.Request, Receipt: result.Receipt}, nil
+}
+
+// Notify delivers a scheduler notification; it satisfies schedules.Notifier.
+func (s *Service) Notify(ctx context.Context, notification schedules.Notification) error {
+	priority := notification.Priority
+	_, err := s.Send(ctx, SendParams{
+		Title: notification.Title, Message: notification.Message, Priority: &priority, Sound: notification.Sound,
+	})
+	return err
 }
 
 // Sounds lists the notification sounds available to the configured application.

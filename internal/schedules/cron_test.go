@@ -49,7 +49,7 @@ func TestNextUsesTimezone(t *testing.T) {
 	}
 }
 
-func TestUntilNextTick(t *testing.T) {
+func TestUntilNext(t *testing.T) {
 	t.Parallel()
 	cases := map[time.Time]time.Duration{
 		time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC):  5 * time.Minute,
@@ -57,8 +57,11 @@ func TestUntilNextTick(t *testing.T) {
 		time.Date(2026, 9, 29, 10, 59, 0, 0, time.UTC): time.Minute,
 	}
 	for now, want := range cases {
-		if got := untilNextTick(now); got != want {
-			t.Errorf("untilNextTick(%v) = %v, want %v", now, got, want)
+		if got := untilNext(now, TickInterval); got != want {
+			t.Errorf("untilNext(%v, TickInterval) = %v, want %v", now, got, want)
 		}
+	}
+	if got := untilNext(time.Date(2026, 9, 29, 10, 3, 30, 0, time.UTC), ReminderTickInterval); got != 30*time.Second {
+		t.Errorf("untilNext(10:03:30, ReminderTickInterval) = %v, want 30s", got)
 	}
 }

@@ -13,6 +13,7 @@ func (s *server) addPushoverTools(mcpServer *mcp.Server) {
 		return
 	}
 	mcp.AddTool(mcpServer, destructiveOpenWorldTool("send_pushover_notification", "Send an external Pushover notification. Requires the Pushover integration to be configured. Emergency priority 2 repeats the alert every retry seconds until acknowledged or expire seconds elapse, and returns a receipt."), s.sendPushoverNotification)
+	s.addReminderTools(mcpServer)
 	mcp.AddTool(mcpServer, openWorldReadTool("list_pushover_sounds", "List Pushover notification sounds (built-in and custom) usable as the sound of send_pushover_notification."), s.listPushoverSounds)
 }
 

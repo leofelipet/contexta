@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/leofelipet/contexta/internal/pagination"
+	"github.com/leofelipet/contexta/internal/pushover"
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/tasks"
 )
@@ -24,6 +25,7 @@ const scheduleSelectCols = `
 	s.id::text, s.cron, s.timezone, s.enabled, s.skip_if_open, s.title, s.description,
 	COALESCE(s.company_id::text, ''), COALESCE(co.name, ''), s.due_in_minutes,
 	COALESCE(s.conversation_id::text, ''), COALESCE(s.contact_id::text, ''),
+	s.notify, s.notify_priority, s.notify_sound,
 	s.next_run_at, s.last_run_at, COALESCE(s.last_task_id::text, ''), s.run_count, s.created_at, s.updated_at`
 
 const scheduleFrom = `
@@ -110,6 +112,10 @@ func (s *Store) CreateTaskSchedule(ctx context.Context, params schedules.CreateP
 		Cron: strings.TrimSpace(params.Cron), Timezone: timezone,
 		Title: params.Title, Description: params.Description, CompanyID: params.CompanyID,
 		DueInMinutes: params.DueInMinutes, ConversationID: params.ConversationID, ContactID: params.ContactID,
+		Notify: params.Notify, NotifySound: params.NotifySound,
+	}
+	if params.NotifyPriority != nil {
+		template.NotifyPriority = *params.NotifyPriority
 	}
 	if err := s.validateScheduleTemplate(ctx, &template); err != nil {
 		return schedules.Schedule{}, err
@@ -123,13 +129,15 @@ func (s *Store) CreateTaskSchedule(ctx context.Context, params schedules.CreateP
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO task_schedules (
 			cron, timezone, enabled, skip_if_open, title, description, company_id,
-			due_in_minutes, conversation_id, contact_id, next_run_at
+			due_in_minutes, conversation_id, contact_id, next_run_at,
+			notify, notify_priority, notify_sound
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9::uuid, $10::uuid, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9::uuid, $10::uuid, $11, $12, $13, $14)
 		RETURNING id::text`,
 		template.Cron, template.Timezone, enabled, params.SkipIfOpen,
 		template.Title, template.Description, nullableTaskID(template.CompanyID), template.DueInMinutes,
 		nullableUUID(template.ConversationID), nullableUUID(template.ContactID), nextRunAt,
+		template.Notify, template.NotifyPriority, template.NotifySound,
 	).Scan(&id)
 	if err != nil {
 		return schedules.Schedule{}, fmt.Errorf("create task schedule: %w", err)
@@ -151,6 +159,7 @@ func (s *Store) UpdateTaskSchedule(ctx context.Context, id string, params schedu
 		Cron: current.Cron, Timezone: current.Timezone,
 		Title: current.Title, Description: current.Description, CompanyID: current.CompanyID,
 		DueInMinutes: current.DueInMinutes, ConversationID: current.ConversationID, ContactID: current.ContactID,
+		Notify: current.Notify, NotifyPriority: current.NotifyPriority, NotifySound: current.NotifySound,
 	}
 	if params.Cron != nil {
 		template.Cron = strings.TrimSpace(*params.Cron)
@@ -181,6 +190,15 @@ func (s *Store) UpdateTaskSchedule(ctx context.Context, id string, params schedu
 	}
 	if params.ContactID != nil {
 		template.ContactID = *params.ContactID
+	}
+	if params.Notify != nil {
+		template.Notify = *params.Notify
+	}
+	if params.NotifyPriority != nil {
+		template.NotifyPriority = *params.NotifyPriority
+	}
+	if params.NotifySound != nil {
+		template.NotifySound = *params.NotifySound
 	}
 	if err := s.validateScheduleTemplate(ctx, &template); err != nil {
 		return schedules.Schedule{}, err
@@ -213,11 +231,13 @@ func (s *Store) UpdateTaskSchedule(ctx context.Context, id string, params schedu
 			cron = $2, timezone = $3, enabled = $4, skip_if_open = $5,
 			title = $6, description = $7, company_id = $8::bigint, due_in_minutes = $9,
 			conversation_id = $10::uuid, contact_id = $11::uuid, next_run_at = $12,
+			notify = $13, notify_priority = $14, notify_sound = $15,
 			updated_at = now()
 		WHERE id = $1`,
 		scheduleID, template.Cron, template.Timezone, enabled, skipIfOpen,
 		template.Title, template.Description, nullableTaskID(template.CompanyID), template.DueInMinutes,
 		nullableUUID(template.ConversationID), nullableUUID(template.ContactID), nextRunAt,
+		template.Notify, template.NotifyPriority, template.NotifySound,
 	)
 	if err != nil {
 		return schedules.Schedule{}, fmt.Errorf("update task schedule: %w", err)
@@ -248,11 +268,13 @@ func (s *Store) DeleteTaskSchedule(ctx context.Context, id string) error {
 // RunDueTaskSchedules creates one task for every enabled schedule whose
 // next_run_at is at or before now. Runs missed while the server was down are
 // collapsed into a single task. Each schedule is claimed with SKIP LOCKED in
-// its own transaction, so concurrent replicas never double-fire.
-func (s *Store) RunDueTaskSchedules(ctx context.Context, now time.Time) (schedules.RunResult, error) {
+// its own transaction, so concurrent replicas never double-fire. Schedules
+// with notify also send a Pushover notification through notify (when not nil)
+// before the run commits; a failed notification still creates the task.
+func (s *Store) RunDueTaskSchedules(ctx context.Context, now time.Time, notify schedules.Notifier) (schedules.RunResult, error) {
 	var result schedules.RunResult
 	for range maxSchedulesPerTick {
-		processed, err := s.runOneDueTaskSchedule(ctx, now, &result)
+		processed, err := s.runOneDueTaskSchedule(ctx, now, notify, &result)
 		if err != nil || !processed {
 			return result, err
 		}
@@ -260,7 +282,7 @@ func (s *Store) RunDueTaskSchedules(ctx context.Context, now time.Time) (schedul
 	return result, nil
 }
 
-func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, result *schedules.RunResult) (bool, error) {
+func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, notify schedules.Notifier, result *schedules.RunResult) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin task schedule run: %w", err)
@@ -271,20 +293,24 @@ func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, result
 		id, taskID                                        int64
 		cronExpr, timezone, title, description, companyID string
 		conversationID, contactID, lastTaskStatus         string
-		skipIfOpen                                        bool
+		skipIfOpen, notifyEnabled                         bool
 		dueInMinutes                                      *int
+		notifyPriority                                    int
+		notifySound                                       string
 	)
 	err = tx.QueryRow(ctx, `
 		SELECT s.id, s.cron, s.timezone, s.skip_if_open, s.title, s.description, COALESCE(s.company_id::text, ''),
 		       s.due_in_minutes, COALESCE(s.conversation_id::text, ''), COALESCE(s.contact_id::text, ''),
-		       COALESCE((SELECT t.status FROM tasks t WHERE t.id = s.last_task_id), '')
+		       COALESCE((SELECT t.status FROM tasks t WHERE t.id = s.last_task_id), ''),
+		       s.notify, s.notify_priority, s.notify_sound
 		FROM task_schedules s
 		WHERE s.enabled AND s.next_run_at <= $1
 		ORDER BY s.next_run_at, s.id
 		LIMIT 1
 		FOR UPDATE OF s SKIP LOCKED`, now,
 	).Scan(&id, &cronExpr, &timezone, &skipIfOpen, &title, &description, &companyID,
-		&dueInMinutes, &conversationID, &contactID, &lastTaskStatus)
+		&dueInMinutes, &conversationID, &contactID, &lastTaskStatus,
+		&notifyEnabled, &notifyPriority, &notifySound)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -332,6 +358,11 @@ func (s *Store) runOneDueTaskSchedule(ctx context.Context, now time.Time, result
 		WHERE id = $1`, id, nextRunAt, now, taskID); err != nil {
 		return false, fmt.Errorf("advance task schedule: %w", err)
 	}
+	if notifyEnabled && notify != nil {
+		if err := notify(ctx, schedules.ScheduleNotification(title, description, notifyPriority, notifySound)); err != nil {
+			result.NotifyFailed = append(result.NotifyFailed, strconv.FormatInt(id, 10))
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit task schedule run: %w", err)
 	}
@@ -348,6 +379,9 @@ type scheduleTemplate struct {
 	DueInMinutes   *int
 	ConversationID string
 	ContactID      string
+	Notify         bool
+	NotifyPriority int
+	NotifySound    string
 }
 
 // validateScheduleTemplate trims and validates fields in place, mirroring the task limits.
@@ -384,6 +418,17 @@ func (s *Store) validateScheduleTemplate(ctx context.Context, template *schedule
 			return err
 		}
 	}
+	template.NotifySound = strings.TrimSpace(template.NotifySound)
+	return validateNotification(template.NotifyPriority, template.NotifySound)
+}
+
+func validateNotification(priority int, sound string) error {
+	if priority < pushover.MinPriority || priority > pushover.EmergencyPriority {
+		return fmt.Errorf("%w: %w: priority must be between -2 and 2", ErrInvalidArgument, schedules.ErrInvalidNotification)
+	}
+	if !pushover.ValidSound(sound) {
+		return fmt.Errorf("%w: %w: sound must be a Pushover sound id", ErrInvalidArgument, schedules.ErrInvalidNotification)
+	}
 	return nil
 }
 
@@ -418,6 +463,7 @@ func scanSchedule(row taskScanner) (schedules.Schedule, error) {
 		&schedule.ID, &schedule.Cron, &schedule.Timezone, &schedule.Enabled, &schedule.SkipIfOpen,
 		&schedule.Title, &schedule.Description, &schedule.CompanyID, &schedule.CompanyName, &schedule.DueInMinutes,
 		&schedule.ConversationID, &schedule.ContactID,
+		&schedule.Notify, &schedule.NotifyPriority, &schedule.NotifySound,
 		&schedule.NextRunAt, &schedule.LastRunAt, &schedule.LastTaskID, &schedule.RunCount,
 		&schedule.CreatedAt, &schedule.UpdatedAt,
 	); err != nil {
