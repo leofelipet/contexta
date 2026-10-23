@@ -27,6 +27,7 @@ import (
 	"github.com/leofelipet/contexta/internal/transcription"
 	"github.com/leofelipet/contexta/internal/transport/httpapi"
 	"github.com/leofelipet/contexta/internal/transport/mcpserver"
+	"github.com/leofelipet/contexta/internal/whatsappsend"
 )
 
 func Run(ctx context.Context, args []string, stdout io.Writer) error {
@@ -112,7 +113,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 
 	root := http.NewServeMux()
 	if cfg.MCPEnabled {
-		root.Handle("/mcp", mcpserver.New(store, memoriesService, emailService, pushoverService, cfg.MCPToken, logger))
+		root.Handle("/mcp", mcpserver.New(store, memoriesService, emailService, pushoverService, whatsappsend.NewService(uazapiClient), cfg.MCPToken, logger))
 	}
 	root.Handle("/", apiHandler)
 

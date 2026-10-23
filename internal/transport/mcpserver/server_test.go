@@ -202,7 +202,7 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memoriesService := memories.NewService(fakeMemoryStore{}, nil)
-	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, nil, nil, "test-token", logger))
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, nil, nil, nil, "test-token", logger))
 	defer httpServer.Close()
 
 	unauthorized, err := http.Get(httpServer.URL)
@@ -433,7 +433,7 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	key := make([]byte, 32)
 	emailService := email.NewService(fakeEmailStore{}, key, nil, nil)
 	pushoverService := pushover.NewService(fakePushoverStore{}, key, nil)
-	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, emailService, pushoverService, "test-token", logger))
+	httpServer := httptest.NewServer(New(fakeStore{}, memoriesService, emailService, pushoverService, nil, "test-token", logger))
 	defer httpServer.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)
@@ -495,7 +495,7 @@ func TestMCPSendEmailAcceptsBase64Attachment(t *testing.T) {
 	smtpClient := &sendingSMTP{}
 	emailService := email.NewService(sendingEmailStore{ciphertext: ciphertext}, key, nil, smtpClient)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	httpServer := httptest.NewServer(New(fakeStore{}, memories.NewService(fakeMemoryStore{}, nil), emailService, nil, "test-token", logger))
+	httpServer := httptest.NewServer(New(fakeStore{}, memories.NewService(fakeMemoryStore{}, nil), emailService, nil, nil, "test-token", logger))
 	defer httpServer.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)

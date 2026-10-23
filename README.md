@@ -4,7 +4,7 @@ Personal WhatsApp data platform and authenticated MCP server. Contexta receives 
 
 The administrative Next.js interface lives in the separate [contexta-web](https://github.com/leofelipet/contexta-web) repository.
 
-Contexta does not contain an LLM, chatbot, response automation, or WhatsApp message-sending tool. Optional corporate email accounts (IMAP/SMTP) can be connected so MCP agents can read, organize, and send email.
+Contexta does not contain an LLM, chatbot, or response automation. The only WhatsApp sending path is the MCP `send_whatsapp` tool, which sends one human-approved text message at a time. Optional corporate email accounts (IMAP/SMTP) can be connected so MCP agents can read, organize, and send email.
 
 ## Requirements
 
@@ -97,6 +97,15 @@ Configure the global Pushover application token and recipient user/group key thr
 - **One-off reminders** (`/api/v1/reminders`, MCP `create_reminder`) send a Pushover notification at `send_at`. `send_at` is RFC3339 with offset or a local `YYYY-MM-DDTHH:MM` interpreted in `timezone` (default `America/Sao_Paulo`). Each reminder has a `message` (required, up to 1024 characters), optional `title`, `priority` (`-2` through `2`; emergency uses the default retry/expire), and `sound`. The worker checks for due reminders every minute. A failed delivery is retried on the next ticks up to 3 attempts, then the reminder is marked `failed` with `last_error`. Only `pending` reminders can be changed; deleting a pending reminder cancels it.
 - **Recurring notifications**: a task schedule with `notify=true` also sends a Pushover notification each time it creates a task, using the schedule title as title and its description (or title) as message, with `notify_priority` and `notify_sound`. A failed notification is logged and does not prevent the task.
 - Both require the Pushover integration to be configured and enabled at delivery time. A notification is sent before its run commits, so a crash in between can resend it on the next tick, but replicas never double-send.
+
+## Sending WhatsApp messages (MCP)
+
+The MCP tool `send_whatsapp` sends one text message to one individual contact through UAZAPI (`POST /send/text`). There is no REST route for it. Inputs:
+
+- `recipient`: a phone number in international format (`+`, spaces, `-`, `.` and parentheses are stripped; 8 to 15 digits) or a `<digits>@s.whatsapp.net` JID. It is normalized to `<digits>@s.whatsapp.net`. Groups (`@g.us`), `@lid`, channels (`@newsletter`), `@broadcast` and any other suffix are rejected.
+- `text`: non-empty, at most 4096 characters, sent byte-for-byte. Text containing `{{` is rejected because UAZAPI would expand `{{placeholders}}` and deliver something other than what was approved.
+
+The tool is annotated as destructive and its description requires the agent to show Leonardo the recipient and the exact text in chat and get an explicit "sim" before every call; any change requires approval again. Every attempt is recorded in activity (`GET /api/v1/activity`, category `mcp`, operation `send_whatsapp`, entity type `whatsapp_message`) with outcome `sent`, `failed` or `rejected` and metadata holding `recipient_jid`, the exact `text`, `message_id`, `status` and any `error`. The UAZAPI token is never recorded.
 
 ## Companies
 
@@ -290,10 +299,10 @@ Captured files still contain private conversation data. Keep capture mode disabl
 - UAZAPI credentials and application tokens only come from environment variables.
 - Groq API keys, UAZAPI media keys, signed media URLs, audio bytes, and transcript contents are never logged.
 - Downloaded audio is size-limited, kept in memory only for processing, and is not persisted by Contexta.
-- MCP WhatsApp data is read-only. The only WhatsApp state-changing tool writes idempotent, per-agent local read receipts and cannot alter WhatsApp content.
+- MCP WhatsApp data is read-only except for `send_whatsapp`, which is destructive and sends one approved text to one individual contact. Read receipts are local and per-agent and never alter WhatsApp content.
 - Email passwords are encrypted at rest, never returned by the API or MCP, and never logged. `send_email` and `delete_email` are annotated as destructive so MCP clients can require confirmation.
 - Pushover credentials are encrypted at rest, never returned by the API or MCP, and never logged. `send_pushover_notification` is destructive so MCP clients can require confirmation.
-- Operational activity excludes message bodies, payloads, authentication headers, and secrets.
+- Operational activity excludes message bodies, payloads, authentication headers, and secrets, except that `send_whatsapp` records the exact text it sent or attempted as an audit trail.
 
 Run checks with:
 

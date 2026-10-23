@@ -51,7 +51,7 @@ func TestMCPSendPushoverEmergencyReturnsReceipt(t *testing.T) {
 	pushoverClient := &recordingPushoverClient{}
 	pushoverService := pushover.NewService(configuredPushoverStore{app: app, user: user}, key, pushoverClient)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	httpServer := httptest.NewServer(New(fakeStore{}, memories.NewService(fakeMemoryStore{}, nil), nil, pushoverService, "test-token", logger))
+	httpServer := httptest.NewServer(New(fakeStore{}, memories.NewService(fakeMemoryStore{}, nil), nil, pushoverService, nil, "test-token", logger))
 	defer httpServer.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)

@@ -22,6 +22,7 @@ import (
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/leofelipet/contexta/internal/version"
+	"github.com/leofelipet/contexta/internal/whatsappsend"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -77,11 +78,12 @@ type server struct {
 	memories *memories.Service
 	email    *email.Service
 	pushover *pushover.Service
+	whatsapp *whatsappsend.Service
 	logger   *slog.Logger
 }
 
-func New(store Store, memoriesService *memories.Service, emailService *email.Service, pushoverService *pushover.Service, token string, logger *slog.Logger) http.Handler {
-	implementation := &server{store: store, memories: memoriesService, email: emailService, pushover: pushoverService, logger: logger}
+func New(store Store, memoriesService *memories.Service, emailService *email.Service, pushoverService *pushover.Service, whatsappService *whatsappsend.Service, token string, logger *slog.Logger) http.Handler {
+	implementation := &server{store: store, memories: memoriesService, email: emailService, pushover: pushoverService, whatsapp: whatsappService, logger: logger}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: version.Version}, nil)
 	implementation.addTools(mcpServer)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
@@ -122,6 +124,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	s.addBulkTools(mcpServer)
 	s.addEmailTools(mcpServer)
 	s.addPushoverTools(mcpServer)
+	s.addWhatsAppTools(mcpServer)
 }
 
 func localWriteTool(name, description string) *mcp.Tool {
