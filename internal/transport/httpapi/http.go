@@ -32,6 +32,7 @@ import (
 	"github.com/leofelipet/contexta/internal/schedules"
 	"github.com/leofelipet/contexta/internal/storage/postgres"
 	"github.com/leofelipet/contexta/internal/tasks"
+	"github.com/leofelipet/contexta/internal/trello"
 	"github.com/leofelipet/contexta/internal/version"
 )
 
@@ -105,21 +106,23 @@ type UAZAPIClient interface {
 }
 
 type Options struct {
-	Store              Store
-	Memories           *memories.Service
-	Email              *email.Service
-	Pushover           *pushover.Service
-	Ingestion          *ingestion.Service
-	APIToken           string
-	WebhookSecret      string
-	ProviderInstanceID string
-	CaptureDir         string
-	WebhookPublicURL   string
-	UAZAPIClient       UAZAPIClient
-	MCPEnabled         bool
-	StartedAt          time.Time
-	Logger             *slog.Logger
-	Realtime           *realtime.Hub
+	Store               Store
+	Memories            *memories.Service
+	Email               *email.Service
+	Pushover            *pushover.Service
+	Trello              *trello.Service
+	Ingestion           *ingestion.Service
+	APIToken            string
+	WebhookSecret       string
+	ProviderInstanceID  string
+	CaptureDir          string
+	WebhookPublicURL    string
+	TrelloWebhookSecret string
+	UAZAPIClient        UAZAPIClient
+	MCPEnabled          bool
+	StartedAt           time.Time
+	Logger              *slog.Logger
+	Realtime            *realtime.Hub
 }
 
 func New(options Options) http.Handler {
@@ -128,26 +131,30 @@ func New(options Options) http.Handler {
 		startedAt = time.Now().UTC()
 	}
 	handler := &handler{
-		store:              options.Store,
-		memories:           options.Memories,
-		email:              options.Email,
-		pushover:           options.Pushover,
-		ingestion:          options.Ingestion,
-		webhookSecret:      options.WebhookSecret,
-		providerInstanceID: options.ProviderInstanceID,
-		captureDir:         options.CaptureDir,
-		webhookPublicURL:   options.WebhookPublicURL,
-		uazapi:             options.UAZAPIClient,
-		mcpEnabled:         options.MCPEnabled,
-		startedAt:          startedAt,
-		logger:             options.Logger,
-		realtime:           options.Realtime,
+		store:               options.Store,
+		memories:            options.Memories,
+		email:               options.Email,
+		pushover:            options.Pushover,
+		trello:              options.Trello,
+		ingestion:           options.Ingestion,
+		webhookSecret:       options.WebhookSecret,
+		providerInstanceID:  options.ProviderInstanceID,
+		captureDir:          options.CaptureDir,
+		webhookPublicURL:    options.WebhookPublicURL,
+		trelloWebhookSecret: options.TrelloWebhookSecret,
+		uazapi:              options.UAZAPIClient,
+		mcpEnabled:          options.MCPEnabled,
+		startedAt:           startedAt,
+		logger:              options.Logger,
+		realtime:            options.Realtime,
 	}
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /health/live", handler.live)
 	root.HandleFunc("GET /health/ready", handler.ready)
 	root.HandleFunc("POST /webhooks/uazapi/{secret}", handler.uazapiWebhook)
+	root.HandleFunc("HEAD /webhooks/trello/{secret}", handler.trelloWebhook)
+	root.HandleFunc("POST /webhooks/trello/{secret}", handler.trelloWebhook)
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/contacts", handler.listContacts)
@@ -211,6 +218,8 @@ func New(options Options) http.Handler {
 	api.HandleFunc("PATCH /api/v1/integrations/pushover", handler.configurePushover)
 	api.HandleFunc("GET /api/v1/integrations/pushover/sounds", handler.pushoverSounds)
 	api.HandleFunc("POST /api/v1/integrations/pushover/send", handler.sendPushover)
+	api.HandleFunc("GET /api/v1/integrations/trello", handler.trelloStatus)
+	api.HandleFunc("PATCH /api/v1/integrations/trello", handler.configureTrello)
 	api.HandleFunc("GET /api/v1/email-accounts", handler.listEmailAccounts)
 	api.HandleFunc("POST /api/v1/email-accounts", handler.createEmailAccount)
 	api.HandleFunc("GET /api/v1/email-accounts/{id}", handler.getEmailAccount)
@@ -230,20 +239,22 @@ func New(options Options) http.Handler {
 }
 
 type handler struct {
-	store              Store
-	memories           *memories.Service
-	email              *email.Service
-	pushover           *pushover.Service
-	ingestion          *ingestion.Service
-	webhookSecret      string
-	providerInstanceID string
-	captureDir         string
-	webhookPublicURL   string
-	uazapi             UAZAPIClient
-	mcpEnabled         bool
-	startedAt          time.Time
-	logger             *slog.Logger
-	realtime           *realtime.Hub
+	store               Store
+	memories            *memories.Service
+	email               *email.Service
+	pushover            *pushover.Service
+	trello              *trello.Service
+	ingestion           *ingestion.Service
+	webhookSecret       string
+	providerInstanceID  string
+	captureDir          string
+	webhookPublicURL    string
+	trelloWebhookSecret string
+	uazapi              UAZAPIClient
+	mcpEnabled          bool
+	startedAt           time.Time
+	logger              *slog.Logger
+	realtime            *realtime.Hub
 }
 
 func (h *handler) live(w http.ResponseWriter, _ *http.Request) {

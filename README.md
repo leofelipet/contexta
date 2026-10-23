@@ -92,6 +92,12 @@ TLS is on by default: IMAP port 143 and SMTP port 587 use STARTTLS, other ports 
 
 Configure the global Pushover application token and recipient user/group key through the admin UI or authenticated REST API. Both are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and are never returned by the API or MCP. The MCP `send_pushover_notification` tool and the web UI send a title, message, priority (`-2` through `2`), optional URL, and optional `sound` (a sound id; empty keeps the recipient's default tone). `GET /api/v1/integrations/pushover/sounds` and the MCP `list_pushover_sounds` tool list the built-in and custom sounds available to the configured application. Emergency priority `2` accepts optional `retry` (seconds, minimum 30, default 60) and `expire` (seconds, at most 10800 and not less than `retry`, default 3600) and returns the Pushover `receipt`; `retry`/`expire` are rejected for other priorities. Contexta does not poll receipts.
 
+## Trello
+
+Contexta can receive one Trello board through a signed webhook and mirror its cards into local tasks. Configure `TRELLO_WEBHOOK_PUBLIC_URL` and a separate random `TRELLO_WEBHOOK_SECRET` (at least 32 characters), then `PATCH /api/v1/integrations/trello` with the Trello API key, application secret, token, board ID, and a map of list IDs to Contexta task statuses. Credentials are encrypted at rest with `EMAIL_CREDENTIALS_KEY` and never returned by the API.
+
+Only mapped lists are imported. A card update creates or updates its linked task; events are idempotent and older events cannot overwrite newer state. Archived cards are marked `cancelled`; no local task is deleted. Trello verifies the callback with `HEAD /webhooks/trello/{secret}` and Contexta verifies each POST using `X-Trello-Webhook`.
+
 ### Reminders and scheduled notifications
 
 - **One-off reminders** (`/api/v1/reminders`, MCP `create_reminder`) send a Pushover notification at `send_at`. `send_at` is RFC3339 with offset or a local `YYYY-MM-DDTHH:MM` interpreted in `timezone` (default `America/Sao_Paulo`). Each reminder has a `message` (required, up to 1024 characters), optional `title`, `priority` (`-2` through `2`; emergency uses the default retry/expire), and `sound`. The worker checks for due reminders every minute. A failed delivery is retried on the next ticks up to 3 attempts, then the reminder is marked `failed` with `last_error`. Only `pending` reminders can be changed; deleting a pending reminder cancels it.
@@ -182,6 +188,8 @@ GET /api/v1/integrations/pushover
 GET /api/v1/integrations/pushover/sounds
 PATCH /api/v1/integrations/pushover
 POST /api/v1/integrations/pushover/send
+GET /api/v1/integrations/trello
+PATCH /api/v1/integrations/trello
 GET /api/v1/companies
 POST /api/v1/companies
 POST /api/v1/companies/bulk-delete

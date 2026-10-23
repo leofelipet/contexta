@@ -26,6 +26,7 @@ type Config struct {
 	SchedulerEnabled    bool
 	EmailCredentialsKey []byte
 	UAZAPI              UAZAPI
+	Trello              Trello
 	Transcription       Transcription
 	OpenRouter          OpenRouter
 }
@@ -43,6 +44,11 @@ type UAZAPI struct {
 	WebhookSecret    string
 	WebhookPublicURL string
 	CaptureDir       string
+}
+
+type Trello struct {
+	WebhookSecret    string
+	WebhookPublicURL string
 }
 
 type Transcription struct {
@@ -88,6 +94,10 @@ func Load() (Config, error) {
 			WebhookSecret:    os.Getenv("UAZAPI_WEBHOOK_SECRET"),
 			WebhookPublicURL: strings.TrimRight(os.Getenv("UAZAPI_WEBHOOK_PUBLIC_URL"), "/"),
 			CaptureDir:       os.Getenv("UAZAPI_CAPTURE_DIR"),
+		},
+		Trello: Trello{
+			WebhookSecret:    os.Getenv("TRELLO_WEBHOOK_SECRET"),
+			WebhookPublicURL: strings.TrimRight(os.Getenv("TRELLO_WEBHOOK_PUBLIC_URL"), "/"),
 		},
 		Transcription: Transcription{
 			Enabled:  false,
@@ -150,6 +160,12 @@ func (c Config) Validate() error {
 	if len(c.UAZAPI.WebhookSecret) < minimumSecretLength {
 		errs = append(errs, fmt.Errorf("UAZAPI_WEBHOOK_SECRET must contain at least %d characters", minimumSecretLength))
 	}
+	if c.Trello.WebhookPublicURL != "" && len(c.Trello.WebhookSecret) < minimumSecretLength {
+		errs = append(errs, fmt.Errorf("TRELLO_WEBHOOK_SECRET must contain at least %d characters when TRELLO_WEBHOOK_PUBLIC_URL is set", minimumSecretLength))
+	}
+	if c.Trello.WebhookPublicURL == "" && c.Trello.WebhookSecret != "" {
+		errs = append(errs, errors.New("TRELLO_WEBHOOK_PUBLIC_URL is required when TRELLO_WEBHOOK_SECRET is set"))
+	}
 	if c.Transcription.Enabled && c.Transcription.APIKey == "" {
 		errs = append(errs, errors.New("GROQ_API_KEY is required when transcription is enabled"))
 	}
@@ -164,6 +180,13 @@ func (c Config) Validate() error {
 
 func (c Config) HTTPAddress() string {
 	return net.JoinHostPort(c.HTTPHost, strconv.Itoa(c.HTTPPort))
+}
+
+func (t Trello) CallbackURL() string {
+	if t.WebhookPublicURL == "" || t.WebhookSecret == "" {
+		return ""
+	}
+	return strings.TrimRight(t.WebhookPublicURL, "/") + "/" + t.WebhookSecret
 }
 
 func stringEnv(key, fallback string) string {

@@ -27,6 +27,7 @@ import (
 	"github.com/leofelipet/contexta/internal/transcription"
 	"github.com/leofelipet/contexta/internal/transport/httpapi"
 	"github.com/leofelipet/contexta/internal/transport/mcpserver"
+	"github.com/leofelipet/contexta/internal/trello"
 	"github.com/leofelipet/contexta/internal/whatsappsend"
 )
 
@@ -93,6 +94,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 	memoriesService := memories.NewService(store, embedder)
 	emailService := email.NewService(store, cfg.EmailCredentialsKey, nil, nil)
 	pushoverService := pushover.NewService(store, cfg.EmailCredentialsKey, nil)
+	trelloService := trello.NewService(store, cfg.EmailCredentialsKey, nil, cfg.Trello.CallbackURL())
 	uazapiClient := uazapi.NewClient(cfg.UAZAPI.BaseURL, cfg.UAZAPI.Token)
 	go syncChats(ctx, store, uazapiClient, cfg.UAZAPI.InstanceID, logger)
 	if cfg.Transcription.Enabled {
@@ -104,10 +106,11 @@ func serve(ctx context.Context, cfg config.Config) error {
 		go schedules.NewWorker(store, pushoverService.Notify, logger).Run(ctx)
 	}
 	apiHandler := httpapi.New(httpapi.Options{
-		Store: store, Memories: memoriesService, Email: emailService, Pushover: pushoverService, Ingestion: ingestionService, APIToken: cfg.APIToken,
+		Store: store, Memories: memoriesService, Email: emailService, Pushover: pushoverService, Trello: trelloService, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
-		UAZAPIClient: uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
+		TrelloWebhookSecret: cfg.Trello.WebhookSecret,
+		UAZAPIClient:        uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
 		Realtime: realtime.NewHub(),
 	})
 
