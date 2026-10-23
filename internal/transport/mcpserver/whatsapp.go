@@ -10,7 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const sendWhatsAppDescription = "Send ONE WhatsApp text message to ONE individual contact via UAZAPI. NUNCA chame esta ferramenta sem antes mostrar ao Leonardo, no chat, o destinatário e o texto exato, e receber dele um 'sim' explícito para essa mensagem. Envie exatamente o texto aprovado, sem nenhuma alteração; se algo mudar, peça aprovação de novo. recipient: phone number in international format (e.g. 5511999999999) or a <digits>@s.whatsapp.net JID; groups (@g.us), @lid and channels are rejected. text: non-empty, max 4096 characters, no {{placeholders}}. Destructive: delivers a real message to an external person and cannot be undone."
+const sendWhatsAppDescription = "Send one WhatsApp text message to one individual contact via UAZAPI. Requires the user's explicit approval of the recipient and exact text before sending. recipient: phone number in international format (e.g. 5511999999999) or a <digits>@s.whatsapp.net JID; groups, @lid and channels are rejected. text: 1-4096 characters, sent exactly as given; {{placeholders}} are rejected. Destructive: delivers a message to an external contact and cannot be undone."
 
 func (s *server) addWhatsAppTools(mcpServer *mcp.Server) {
 	if s.whatsapp == nil {
@@ -20,8 +20,8 @@ func (s *server) addWhatsAppTools(mcpServer *mcp.Server) {
 }
 
 type sendWhatsAppInput struct {
-	Recipient string `json:"recipient" jsonschema:"Phone number in international format (e.g. 5511999999999) or a <digits>@s.whatsapp.net JID."`
-	Text      string `json:"text" jsonschema:"Exact text approved by Leonardo; sent unchanged. Max 4096 characters, no {{placeholders}}."`
+	Recipient string `json:"recipient" jsonschema:"Phone number in international format (e.g. 5511999999999) or a <digits>@s.whatsapp.net JID. Groups, @lid and channels are rejected."`
+	Text      string `json:"text" jsonschema:"Message text, 1-4096 characters, sent exactly as given. Text containing {{ is rejected."`
 }
 
 type sendWhatsAppOutput struct {
