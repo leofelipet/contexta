@@ -4,7 +4,7 @@ Personal WhatsApp data platform and authenticated MCP server. Contexta receives 
 
 The administrative Next.js interface lives in the separate [contexta-web](https://github.com/leofelipet/contexta-web) repository.
 
-Contexta does not contain an LLM, chatbot, or response automation. The only WhatsApp sending path is the MCP `send_whatsapp` tool, which sends one human-approved text message at a time. Optional corporate email accounts (IMAP/SMTP) can be connected so MCP agents can read, organize, and send email.
+Contexta does not contain an LLM, chatbot, or response automation. The only WhatsApp sending paths are the MCP tools `send_whatsapp`, `send_whatsapp_media` and `send_whatsapp_pix`, which send one human-approved message at a time. Optional corporate email accounts (IMAP/SMTP) can be connected so MCP agents can read, organize, and send email.
 
 ## Requirements
 
@@ -106,12 +106,21 @@ Only mapped lists are imported. A card update creates or updates its linked task
 
 ## Sending WhatsApp messages (MCP)
 
-The MCP tool `send_whatsapp` sends one text message to one individual contact through UAZAPI (`POST /send/text`). There is no REST route for it. Inputs:
+Three MCP tools send through UAZAPI. There are no REST routes for them.
 
-- `recipient`: a phone number in international format (`+`, spaces, `-`, `.` and parentheses are stripped; 8 to 15 digits) or a `<digits>@s.whatsapp.net` JID. It is normalized to `<digits>@s.whatsapp.net`. Groups (`@g.us`), `@lid`, channels (`@newsletter`), `@broadcast` and any other suffix are rejected.
-- `text`: non-empty, at most 4096 characters, sent byte-for-byte. Text containing `{{` is rejected because UAZAPI would expand `{{placeholders}}` and deliver something other than what was approved.
+- `send_whatsapp` (`POST /send/text`): `recipient`, `text` and optional `mentions`.
+- `send_whatsapp_media` (`POST /send/media`): `recipient`, `type` (`document` for any file format, `image`, `video`, `audio`), `url`, optional `doc_name` (documents only), `caption` (not for audio) and `mentions`.
+- `send_whatsapp_pix` (`POST /send/pix-button`): WhatsApp's native PIX button. `recipient`, `pix_type` (`CPF`, `CNPJ`, `PHONE`, `EMAIL`, `EVP`), `pix_key` and optional `pix_name`.
 
-The tool is annotated as destructive and its description requires the agent to show Leonardo the recipient and the exact text in chat and get an explicit "sim" before every call; any change requires approval again. Every attempt is recorded in activity (`GET /api/v1/activity`, category `mcp`, operation `send_whatsapp`, entity type `whatsapp_message`) with outcome `sent`, `failed` or `rejected` and metadata holding `recipient_jid`, the exact `text`, `message_id`, `status` and any `error`. The UAZAPI token is never recorded.
+Rules shared by all three:
+
+- `recipient`: a phone number in international format (`+`, spaces, `-`, `.` and parentheses are stripped; 8 to 15 digits), a `<digits>@s.whatsapp.net` JID, or a group JID ending in `@g.us` (digits, or the legacy `<creator>-<timestamp>` form). Find groups with `find_conversations`. `@lid`, channels (`@newsletter`), `@broadcast` and any other suffix are rejected.
+- `text` and `caption`: at most 4096 characters, sent byte-for-byte. Content containing `{{` is rejected because UAZAPI would expand `{{placeholders}}` and deliver something other than what was approved.
+- `mentions`: only when the recipient is a group. Either phone numbers (normalized like `recipient`) or exactly `["all"]` to tag every member. Include `@<number>` in the text for the tag to render highlighted.
+- `url`: a public `http(s)` link that UAZAPI downloads itself. Local paths and base64 are not supported.
+- `pix_key` is validated and normalized before sending: CPF (11 digits, check digits), CNPJ (14 characters, numeric or the 2026 alphanumeric format, check digits), PHONE (Brazilian, sent as `+55...`), EMAIL (plain address), EVP (UUID, lowercased). The tool returns the normalized `pix_key`.
+
+The tools are annotated as destructive and their descriptions require the user's explicit approval of the recipient and the exact content before every call; any change requires approval again. Every attempt is recorded in activity (`GET /api/v1/activity`, category `mcp`, operation `send_whatsapp`, `send_whatsapp_media` or `send_whatsapp_pix`, entity type `whatsapp_message`) with outcome `sent`, `failed` or `rejected` and metadata holding `recipient_jid`, the exact content (`text`, `mentions`, `url`, `doc_name`, `pix_type`, `pix_key`, `normalized_pix_key`, `pix_name` as applicable), `message_id`, `status` and any `error`. The UAZAPI token is never recorded.
 
 ## Companies
 
@@ -307,10 +316,10 @@ Captured files still contain private conversation data. Keep capture mode disabl
 - UAZAPI credentials and application tokens only come from environment variables.
 - Groq API keys, UAZAPI media keys, signed media URLs, audio bytes, and transcript contents are never logged.
 - Downloaded audio is size-limited, kept in memory only for processing, and is not persisted by Contexta.
-- MCP WhatsApp data is read-only except for `send_whatsapp`, which is destructive and sends one approved text to one individual contact. Read receipts are local and per-agent and never alter WhatsApp content.
+- MCP WhatsApp data is read-only except for `send_whatsapp`, `send_whatsapp_media` and `send_whatsapp_pix`, which are destructive and send one approved message to one contact or group. Read receipts are local and per-agent and never alter WhatsApp content.
 - Email passwords are encrypted at rest, never returned by the API or MCP, and never logged. `send_email` and `delete_email` are annotated as destructive so MCP clients can require confirmation.
 - Pushover credentials are encrypted at rest, never returned by the API or MCP, and never logged. `send_pushover_notification` is destructive so MCP clients can require confirmation.
-- Operational activity excludes message bodies, payloads, authentication headers, and secrets, except that `send_whatsapp` records the exact text it sent or attempted as an audit trail.
+- Operational activity excludes message bodies, payloads, authentication headers, and secrets, except that the WhatsApp send tools record the exact content they sent or attempted as an audit trail.
 
 Run checks with:
 
