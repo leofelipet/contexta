@@ -145,7 +145,7 @@ func TestSendMedia(t *testing.T) {
 	if _, err := NewService(sender).SendMedia(context.Background(), "120363000000000000@g.us", params); err != nil {
 		t.Fatal(err)
 	}
-	want := uazapi.Media{Number: "120363000000000000@g.us", Type: "document", File: "https://x.test/a.pdf", DocName: "Contrato.pdf", Text: "segue", Mentions: "all"}
+	want := uazapi.Media{Number: "120363000000000000@g.us", Type: "document", File: "https://x.test/a.pdf", DocName: "Contrato.pdf", Mimetype: "application/pdf", Text: "segue", Mentions: "all"}
 	if sender.media != want {
 		t.Fatalf("media = %#v", sender.media)
 	}
@@ -203,5 +203,22 @@ func TestSendPix(t *testing.T) {
 	}
 	if want := (uazapi.Pix{Number: "5511999999999@s.whatsapp.net", PixType: "CPF", PixKey: "52998224725", PixName: "Leo"}); sender.pix != want {
 		t.Fatalf("pix = %#v", sender.pix)
+	}
+}
+
+func TestMediaMimetype(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ docName, url, want string }{
+		{"Teste.pdf", "https://www.w3.org/x/dummy.pdf", "application/pdf"},
+		{"", "https://x.test/files/Foto.PNG?sig=1", "image/png"},
+		{"planilha.xlsx", "https://x.test/download?id=9", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"notas.txt", "", "text/plain"},
+		{"semextensao", "https://x.test/download?id=9", ""},
+		{"", "https://x.test/arquivo.desconhecido", ""},
+	}
+	for _, test := range tests {
+		if got := mediaMimetype(test.docName, test.url); got != test.want {
+			t.Errorf("mediaMimetype(%q, %q) = %q, want %q", test.docName, test.url, got, test.want)
+		}
 	}
 }

@@ -16,6 +16,7 @@ type Media struct {
 	Type     string `json:"type"`
 	File     string `json:"file"`
 	DocName  string `json:"docName,omitempty"`
+	Mimetype string `json:"mimetype,omitempty"`
 	Text     string `json:"text,omitempty"`
 	Mentions string `json:"mentions,omitempty"`
 }

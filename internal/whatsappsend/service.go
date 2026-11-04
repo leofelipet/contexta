@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/mail"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -174,6 +176,7 @@ func (s *Service) SendMedia(ctx context.Context, recipient string, params MediaP
 	}
 	return deliver(jid)(s.sender.SendMedia(ctx, uazapi.Media{
 		Number: jid, Type: params.Type, File: params.URL, DocName: params.DocName, Text: params.Caption, Mentions: mentionsValue,
+		Mimetype: mediaMimetype(params.DocName, params.URL),
 	}))
 }
 
@@ -203,6 +206,36 @@ func deliver(jid string) func(uazapi.SendTextResult, error) (Result, error) {
 		}
 		return Result{RecipientJID: jid, MessageID: sent.MessageID, Status: sent.Status}, nil
 	}
+}
+
+// officeMimetypes covers common files missing from Go's builtin table (the Alpine image has no /etc/mime.types).
+var officeMimetypes = map[string]string{
+	".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	".ppt": "application/vnd.ms-powerpoint", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".csv": "text/csv", ".txt": "text/plain", ".zip": "application/zip", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".mp4": "video/mp4",
+}
+
+// mediaMimetype guesses the MIME type from doc_name, then the URL path, so UAZAPI does not
+// rely on the remote server's Content-Type (which may carry odd parameters). Empty lets UAZAPI detect it.
+func mediaMimetype(docName, rawURL string) string {
+	extensions := []string{path.Ext(docName)}
+	if parsed, err := url.Parse(rawURL); err == nil {
+		extensions = append(extensions, path.Ext(parsed.Path))
+	}
+	for _, extension := range extensions {
+		extension = strings.ToLower(extension)
+		if extension == "" {
+			continue
+		}
+		if known, ok := officeMimetypes[extension]; ok {
+			return known
+		}
+		if guessed, _, err := mime.ParseMediaType(mime.TypeByExtension(extension)); err == nil {
+			return guessed
+		}
+	}
+	return ""
 }
 
 func validateMedia(params MediaParams) error {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/leofelipet/contexta/internal/transcription"
@@ -45,13 +46,16 @@ func TestSendText(t *testing.T) {
 func TestSendTextRemoteError(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"error":"bad"}`, http.StatusBadRequest)
+		http.Error(w, "{\"error\":\n  \"invalid file\"}", http.StatusBadRequest)
 	}))
 	defer server.Close()
 	_, err := NewClient(server.URL, "instance-token").SendText(context.Background(), "5511999999999@s.whatsapp.net", "hi", "")
 	var remote *transcription.RemoteError
-	if !errors.As(err, &remote) || remote.StatusCode != http.StatusBadRequest {
+	if !errors.As(err, &remote) || remote.StatusCode != http.StatusBadRequest || err.Error() != `UAZAPI returned status 400: {"error": "invalid file"}` {
 		t.Fatalf("error = %v", err)
+	}
+	if long := errorDetail([]byte(strings.Repeat("é", 400))); len([]rune(long)) != 301 {
+		t.Fatalf("detail not truncated: %d runes", len([]rune(long)))
 	}
 }
 

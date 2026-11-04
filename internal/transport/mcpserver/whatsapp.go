@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/leofelipet/contexta/internal/activity"
@@ -107,9 +109,18 @@ func (s *server) finishWhatsAppSend(ctx context.Context, operation string, resul
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return sendWhatsAppOutput{}, err
 		}
-		return sendWhatsAppOutput{}, errors.New("whatsapp send failed")
+		return sendWhatsAppOutput{}, fmt.Errorf("whatsapp send failed: %s", sendErrorDetail(err))
 	}
 	return sendWhatsAppOutput{Sent: true, RecipientJID: result.RecipientJID, MessageID: result.MessageID, Status: result.Status, PixKey: result.PixKey}, nil
+}
+
+// sendErrorDetail exposes UAZAPI's status and message but not the request URL, which names the instance.
+func sendErrorDetail(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "UAZAPI request failed: " + urlErr.Err.Error()
+	}
+	return err.Error()
 }
 
 // recordWhatsAppSend keeps an audit trail of exactly what was sent or attempted.

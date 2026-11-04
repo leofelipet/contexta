@@ -12,9 +12,13 @@ type RemoteError struct {
 	Provider   string
 	StatusCode int
 	Delay      time.Duration
+	Detail     string // provider's error body, already truncated; may be empty
 }
 
 func (e *RemoteError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("%s returned status %d: %s", e.Provider, e.StatusCode, e.Detail)
+	}
 	return fmt.Sprintf("%s returned status %d", e.Provider, e.StatusCode)
 }
 

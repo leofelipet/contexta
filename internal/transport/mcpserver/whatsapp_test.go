@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 
@@ -185,8 +186,12 @@ func TestMCPSendWhatsAppRecordsFailure(t *testing.T) {
 	t.Parallel()
 	store, sender := &activityStore{}, &recordingWhatsAppSender{err: errors.New("UAZAPI returned status 500")}
 	session := connectWhatsApp(t, store, sender)
-	if result := callSendWhatsApp(t, session, "5511999999999", "hi"); !result.IsError || sender.calls != 1 {
+	result := callSendWhatsApp(t, session, "5511999999999", "hi")
+	if !result.IsError || sender.calls != 1 || len(result.Content) == 0 {
 		t.Fatalf("result = %#v, calls = %d", result, sender.calls)
+	}
+	if text, ok := result.Content[0].(*mcp.TextContent); !ok || text.Text != "whatsapp send failed: UAZAPI returned status 500" {
+		t.Fatalf("error content = %#v", result.Content[0])
 	}
 	record, metadata := store.sendRecord(t)
 	if record.Outcome != "failed" || record.Level != "error" || metadata["error"] != "UAZAPI returned status 500" || metadata["recipient_jid"] != "5511999999999@s.whatsapp.net" {
@@ -248,5 +253,13 @@ func TestMCPSendWhatsAppPix(t *testing.T) {
 	}
 	if record, metadata := store.operationRecord(t, "send_whatsapp_pix"); record.Outcome != "sent" || metadata["normalized_pix_key"] != "52998224725" {
 		t.Fatalf("record = %#v, metadata = %#v", record, metadata)
+	}
+}
+
+func TestSendErrorDetailHidesInstanceURL(t *testing.T) {
+	t.Parallel()
+	err := &url.Error{Op: "Post", URL: "https://minha-instancia.uazapi.com/send/media", Err: errors.New("connection reset by peer")}
+	if got := sendErrorDetail(err); got != "UAZAPI request failed: connection reset by peer" {
+		t.Fatalf("detail = %q", got)
 	}
 }

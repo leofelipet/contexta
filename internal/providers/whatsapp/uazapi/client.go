@@ -179,10 +179,11 @@ func (c *Client) doLimit(ctx context.Context, method, path string, body any, out
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		detail, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		return &transcription.RemoteError{
 			Provider: "UAZAPI", StatusCode: response.StatusCode,
-			Delay: transcription.RetryAfter(response.Header.Get("Retry-After"), time.Now()),
+			Delay:  transcription.RetryAfter(response.Header.Get("Retry-After"), time.Now()),
+			Detail: errorDetail(detail),
 		}
 	}
 	if output == nil {
@@ -193,4 +194,13 @@ func (c *Client) doLimit(ctx context.Context, method, path string, body any, out
 		return fmt.Errorf("decode UAZAPI response: %w", err)
 	}
 	return nil
+}
+
+// errorDetail flattens an error body to one line of at most 300 characters.
+func errorDetail(body []byte) string {
+	detail := strings.Join(strings.Fields(string(body)), " ")
+	if runes := []rune(detail); len(runes) > 300 {
+		detail = string(runes[:300]) + "…"
+	}
+	return detail
 }
