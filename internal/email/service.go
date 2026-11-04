@@ -18,7 +18,7 @@ import (
 
 const (
 	MaxBatchUIDs = 100
-	// Send + Sent-folder append must finish inside the HTTP server WriteTimeout (30s).
+	// Bounds Send + Sent-folder append so API callers get an error instead of hanging.
 	sendBudget = 28 * time.Second
 )
 

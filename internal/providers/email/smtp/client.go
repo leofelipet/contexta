@@ -11,7 +11,7 @@ import (
 	"github.com/wneessen/go-mail"
 )
 
-// Kept below the HTTP server WriteTimeout (30s) so API callers get a real error.
+// Bounds each mail server call so API callers get a real error instead of hanging.
 const operationTimeout = 25 * time.Second
 
 type Credentials struct {

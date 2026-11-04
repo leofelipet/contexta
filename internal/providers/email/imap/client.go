@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	// Kept below the HTTP server WriteTimeout (30s) so API callers get a real error.
+	// Bounds each mail server call so API callers get a real error instead of hanging.
 	operationTimeout = 25 * time.Second
 	maxBodyBytes     = 100 << 10
 	maxFetchBytes    = 2 << 20
