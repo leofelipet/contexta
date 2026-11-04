@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -98,6 +99,12 @@ func (fakeStore) AttachContactToCompany(_ context.Context, companyID, _ string) 
 	return companies.Company{ID: companyID, Name: "ACME", ContactCount: 1}, nil
 }
 func (fakeStore) DetachContactFromCompany(_ context.Context, companyID, _ string) (companies.Company, error) {
+	return companies.Company{ID: companyID, Name: "ACME"}, nil
+}
+func (fakeStore) AttachConversationToCompany(_ context.Context, companyID, _ string) (companies.Company, error) {
+	return companies.Company{ID: companyID, Name: "ACME", ConversationCount: 1}, nil
+}
+func (fakeStore) DetachConversationFromCompany(_ context.Context, companyID, _ string) (companies.Company, error) {
 	return companies.Company{ID: companyID, Name: "ACME"}, nil
 }
 func (fakeStore) ListTasks(context.Context, tasks.ListParams) (tasks.Page, error) {
@@ -228,37 +235,39 @@ func TestMCPToolsOverStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 46 {
-		t.Fatalf("tools = %d, want 46 (without email service)", len(tools.Tools))
+	if len(tools.Tools) != 48 {
+		t.Fatalf("tools = %d, want 48 (without email service)", len(tools.Tools))
 	}
 	writeTools := map[string]bool{
-		"acknowledge_messages":        true,
-		"acknowledge_messages_bulk":   true,
-		"add_to_denylist":             true,
-		"remove_from_denylist":        true,
-		"create_task":                 true,
-		"update_task":                 true,
-		"delete_task":                 true,
-		"attach_memory_to_task":       true,
-		"detach_memory_from_task":     true,
-		"save_memory":                 true,
-		"update_memory":               true,
-		"delete_memory":               true,
-		"create_task_schedule":        true,
-		"update_task_schedule":        true,
-		"delete_task_schedule":        true,
-		"create_company":              true,
-		"update_company":              true,
-		"delete_company":              true,
-		"attach_contact_to_company":   true,
-		"detach_contact_from_company": true,
-		"delete_tasks":                true,
-		"update_tasks_status":         true,
-		"delete_memories":             true,
-		"delete_task_schedules":       true,
-		"set_task_schedules_enabled":  true,
-		"delete_companies":            true,
-		"remove_denylist_entries":     true,
+		"acknowledge_messages":             true,
+		"acknowledge_messages_bulk":        true,
+		"add_to_denylist":                  true,
+		"remove_from_denylist":             true,
+		"create_task":                      true,
+		"update_task":                      true,
+		"delete_task":                      true,
+		"attach_memory_to_task":            true,
+		"detach_memory_from_task":          true,
+		"save_memory":                      true,
+		"update_memory":                    true,
+		"delete_memory":                    true,
+		"create_task_schedule":             true,
+		"update_task_schedule":             true,
+		"delete_task_schedule":             true,
+		"create_company":                   true,
+		"update_company":                   true,
+		"delete_company":                   true,
+		"attach_contact_to_company":        true,
+		"detach_contact_from_company":      true,
+		"attach_conversation_to_company":   true,
+		"detach_conversation_from_company": true,
+		"delete_tasks":                     true,
+		"update_tasks_status":              true,
+		"delete_memories":                  true,
+		"delete_task_schedules":            true,
+		"set_task_schedules_enabled":       true,
+		"delete_companies":                 true,
+		"remove_denylist_entries":          true,
 	}
 	for _, tool := range tools.Tools {
 		if tool.Annotations == nil {
@@ -450,8 +459,8 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 62 {
-		t.Fatalf("tools = %d, want 62 with email and pushover", len(tools.Tools))
+	if len(tools.Tools) != 64 {
+		t.Fatalf("tools = %d, want 64 with email and pushover", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {
@@ -548,5 +557,47 @@ func assertEmailAttachmentSchema(t *testing.T, tool *mcp.Tool) {
 	content, ok := attachmentProperties["content"].(map[string]any)
 	if !ok || content["type"] != "string" {
 		t.Fatalf("attachment content schema = %#v", attachmentProperties["content"])
+	}
+}
+
+type companyConversationStore struct{ fakeStore }
+
+func (companyConversationStore) GetConversation(context.Context, string) (conversations.Conversation, error) {
+	return conversations.Conversation{ID: "conversation-1", CompanyID: "7", CompanyName: "ACME"}, nil
+}
+
+func (companyConversationStore) GetCompany(_ context.Context, id string) (companies.Company, error) {
+	return companies.Company{ID: id, Name: "ACME", Rules: "Faturar até dia 5."}, nil
+}
+
+func TestMCPGetConversationIncludesCompanyRules(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		store Store
+		want  string
+	}{
+		{companyConversationStore{}, "Faturar até dia 5."},
+		{fakeStore{}, ""},
+	} {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		httpServer := httptest.NewServer(New(test.store, memories.NewService(fakeMemoryStore{}, nil), nil, nil, nil, "test-token", logger))
+		client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)
+		session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+			Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: bearerTransport{token: "test-token"}},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_conversation", Arguments: map[string]any{"id": "conversation-1"}})
+		if err != nil || result.IsError {
+			t.Fatalf("result = %#v, error = %v", result, err)
+		}
+		var output conversationOutput
+		data, _ := json.Marshal(result.StructuredContent)
+		if err := json.Unmarshal(data, &output); err != nil || output.CompanyRules != test.want || output.Conversation.ID != "conversation-1" {
+			t.Fatalf("output = %#v, error = %v", output, err)
+		}
+		_ = session.Close()
+		httpServer.Close()
 	}
 }

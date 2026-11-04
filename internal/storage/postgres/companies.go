@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,10 +18,12 @@ import (
 var ErrConflict = errors.New("conflict")
 
 const companySelectCols = `
-	co.id::text, co.name, co.notes,
+	co.id::text, co.name, co.notes, co.rules, co.links,
 	(SELECT count(*) FROM tasks t WHERE t.company_id = co.id AND t.status NOT IN ('done', 'cancelled')),
 	(SELECT count(*) FROM tasks t WHERE t.company_id = co.id),
 	(SELECT count(*) FROM contacts ct WHERE ct.company_id = co.id),
+	(SELECT count(*) FROM conversations conv WHERE conv.company_id = co.id),
+	(SELECT count(*) FROM memories mem WHERE mem.company_id = co.id),
 	co.created_at, co.updated_at`
 
 func (s *Store) ListCompanies(ctx context.Context, params companies.ListParams) (companies.Page, error) {
@@ -33,7 +36,7 @@ func (s *Store) ListCompanies(ctx context.Context, params companies.ListParams) 
 		return companies.Page{}, pagination.ErrInvalidCursor
 	}
 
-	// "#12" is an exact ID lookup; any other text also matches name and notes.
+	// "#12" is an exact ID lookup; any other text also matches name, notes, and rules.
 	textQuery := strings.TrimSpace(params.Query)
 	var queryID any
 	if idPart, ok := strings.CutPrefix(textQuery, "#"); ok && isTaskID(idPart) {
@@ -45,7 +48,7 @@ func (s *Store) ListCompanies(ctx context.Context, params companies.ListParams) 
 		SELECT `+companySelectCols+`
 		FROM companies co
 		WHERE ($1 = '' OR (lower(co.name), co.id) > (lower($1), $2::bigint))
-		  AND ($3 = '' OR co.name ILIKE '%' || $3 || '%' OR co.notes ILIKE '%' || $3 || '%' OR co.id::text = $3)
+		  AND ($3 = '' OR co.name ILIKE '%' || $3 || '%' OR co.notes ILIKE '%' || $3 || '%' OR co.rules ILIKE '%' || $3 || '%' OR co.id::text = $3)
 		  AND ($4::bigint IS NULL OR co.id = $4::bigint)
 		ORDER BY lower(co.name), co.id
 		LIMIT $5`,
@@ -93,14 +96,18 @@ func (s *Store) GetCompany(ctx context.Context, id string) (companies.Company, e
 }
 
 func (s *Store) CreateCompany(ctx context.Context, params companies.CreateParams) (companies.Company, error) {
-	name, notes, err := validateCompany(params.Name, params.Notes)
+	name, notes, rules, links, err := validateCompany(params.Name, params.Notes, params.Rules, params.Links)
 	if err != nil {
 		return companies.Company{}, err
 	}
+	linksJSON, err := json.Marshal(links)
+	if err != nil {
+		return companies.Company{}, fmt.Errorf("encode company links: %w", err)
+	}
 	var id string
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO companies (name, notes) VALUES ($1, $2)
-		RETURNING id::text`, name, notes,
+		INSERT INTO companies (name, notes, rules, links) VALUES ($1, $2, $3, $4::jsonb)
+		RETURNING id::text`, name, notes, rules, linksJSON,
 	).Scan(&id)
 	if err != nil {
 		return companies.Company{}, companyWriteError("create company", err)
@@ -117,20 +124,30 @@ func (s *Store) UpdateCompany(ctx context.Context, id string, params companies.U
 	if err != nil {
 		return companies.Company{}, err
 	}
-	name, notes := current.Name, current.Notes
+	name, notes, rules, links := current.Name, current.Notes, current.Rules, current.Links
 	if params.Name != nil {
 		name = *params.Name
 	}
 	if params.Notes != nil {
 		notes = *params.Notes
 	}
-	name, notes, err = validateCompany(name, notes)
+	if params.Rules != nil {
+		rules = *params.Rules
+	}
+	if params.Links != nil {
+		links = *params.Links
+	}
+	name, notes, rules, links, err = validateCompany(name, notes, rules, links)
 	if err != nil {
 		return companies.Company{}, err
 	}
+	linksJSON, err := json.Marshal(links)
+	if err != nil {
+		return companies.Company{}, fmt.Errorf("encode company links: %w", err)
+	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE companies SET name = $2, notes = $3, updated_at = now()
-		WHERE id = $1`, companyID, name, notes)
+		UPDATE companies SET name = $2, notes = $3, rules = $4, links = $5::jsonb, updated_at = now()
+		WHERE id = $1`, companyID, name, notes, rules, linksJSON)
 	if err != nil {
 		return companies.Company{}, companyWriteError("update company", err)
 	}
@@ -140,8 +157,8 @@ func (s *Store) UpdateCompany(ctx context.Context, id string, params companies.U
 	return s.GetCompany(ctx, id)
 }
 
-// DeleteCompany removes the company; linked tasks, schedules, and contacts are
-// kept and lose their company_id.
+// DeleteCompany removes the company; linked tasks, schedules, contacts,
+// conversations, and memories are kept and lose their company_id.
 func (s *Store) DeleteCompany(ctx context.Context, id string) error {
 	companyID, err := parseTaskID(id)
 	if err != nil {
@@ -197,6 +214,46 @@ func (s *Store) DetachContactFromCompany(ctx context.Context, companyID, contact
 	return s.GetCompany(ctx, companyID)
 }
 
+// AttachConversationToCompany sets the conversation's company, replacing any previous one.
+func (s *Store) AttachConversationToCompany(ctx context.Context, companyID, conversationID string) (companies.Company, error) {
+	id, err := s.requireCompany(ctx, companyID)
+	if err != nil {
+		return companies.Company{}, err
+	}
+	if !isUUID(conversationID) {
+		return companies.Company{}, ErrInvalidArgument
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE conversations SET company_id = $2, updated_at = now() WHERE id = $1::uuid`, conversationID, id)
+	if err != nil {
+		return companies.Company{}, fmt.Errorf("attach conversation to company: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return companies.Company{}, ErrNotFound
+	}
+	return s.GetCompany(ctx, companyID)
+}
+
+// DetachConversationFromCompany clears the conversation's company when it is companyID.
+func (s *Store) DetachConversationFromCompany(ctx context.Context, companyID, conversationID string) (companies.Company, error) {
+	id, err := parseTaskID(companyID)
+	if err != nil {
+		return companies.Company{}, err
+	}
+	if !isUUID(conversationID) {
+		return companies.Company{}, ErrInvalidArgument
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE conversations SET company_id = NULL, updated_at = now()
+		WHERE id = $1::uuid AND company_id = $2`, conversationID, id)
+	if err != nil {
+		return companies.Company{}, fmt.Errorf("detach conversation from company: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return companies.Company{}, ErrNotFound
+	}
+	return s.GetCompany(ctx, companyID)
+}
+
 // requireCompany parses a company ID and checks that it exists.
 func (s *Store) requireCompany(ctx context.Context, value string) (int64, error) {
 	id, err := parseTaskID(value)
@@ -226,16 +283,24 @@ func (s *Store) optionalCompanyID(ctx context.Context, value string) (any, error
 	return id, nil
 }
 
-func validateCompany(name, notes string) (string, string, error) {
+func validateCompany(name, notes, rules string, links []companies.Link) (string, string, string, []companies.Link, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 200 {
-		return "", "", ErrInvalidArgument
+		return "", "", "", nil, ErrInvalidArgument
 	}
 	notes = strings.TrimSpace(notes)
 	if len(notes) > 10000 {
-		return "", "", ErrInvalidArgument
+		return "", "", "", nil, ErrInvalidArgument
 	}
-	return name, notes, nil
+	rules = strings.TrimSpace(rules)
+	if len(rules) > companies.MaxRulesLen {
+		return "", "", "", nil, ErrInvalidArgument
+	}
+	links, err := companies.NormalizeLinks(links)
+	if err != nil {
+		return "", "", "", nil, ErrInvalidArgument
+	}
+	return name, notes, rules, links, nil
 }
 
 func companyWriteError(operation string, err error) error {
@@ -248,12 +313,22 @@ func companyWriteError(operation string, err error) error {
 
 func scanCompany(row taskScanner) (companies.Company, error) {
 	var company companies.Company
+	var linksJSON []byte
 	if err := row.Scan(
-		&company.ID, &company.Name, &company.Notes,
+		&company.ID, &company.Name, &company.Notes, &company.Rules, &linksJSON,
 		&company.OpenTaskCount, &company.TaskCount, &company.ContactCount,
+		&company.ConversationCount, &company.MemoryCount,
 		&company.CreatedAt, &company.UpdatedAt,
 	); err != nil {
 		return companies.Company{}, err
+	}
+	if len(linksJSON) > 0 {
+		if err := json.Unmarshal(linksJSON, &company.Links); err != nil {
+			return companies.Company{}, fmt.Errorf("decode company links: %w", err)
+		}
+	}
+	if company.Links == nil {
+		company.Links = []companies.Link{}
 	}
 	return company, nil
 }

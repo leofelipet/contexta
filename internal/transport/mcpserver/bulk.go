@@ -14,7 +14,7 @@ func (s *server) addBulkTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("delete_memories", "Permanently delete up to 100 memories by ID in one call. IDs that do not exist are ignored."), s.deleteMemories)
 	mcp.AddTool(mcpServer, localWriteTool("delete_task_schedules", "Permanently delete up to 100 recurring task schedules by ID in one call. Tasks they already created are kept."), s.deleteTaskSchedules)
 	mcp.AddTool(mcpServer, localWriteTool("set_task_schedules_enabled", "Pause (enabled=false) or resume (enabled=true) up to 100 recurring task schedules in one call. Resumed schedules run next at their next cron time."), s.setTaskSchedulesEnabled)
-	mcp.AddTool(mcpServer, localWriteTool("delete_companies", "Permanently delete up to 100 companies by ID in one call. Linked tasks, schedules, and contacts are kept without the company link."), s.deleteCompanies)
+	mcp.AddTool(mcpServer, localWriteTool("delete_companies", "Permanently delete up to 100 companies by ID in one call. Linked tasks, schedules, contacts, conversations, and memories are kept without the company link."), s.deleteCompanies)
 	mcp.AddTool(mcpServer, localWriteTool("remove_denylist_entries", "Remove up to 100 denylist entries by ID in one call so messages from those targets are ingested again."), s.removeDenylistEntries)
 }
 

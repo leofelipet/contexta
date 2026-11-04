@@ -8,6 +8,8 @@ type Conversation struct {
 	ContactID              string     `json:"contact_id,omitempty"`
 	Type                   string     `json:"type"`
 	Title                  string     `json:"title,omitempty"`
+	CompanyID              string     `json:"company_id,omitempty"`
+	CompanyName            string     `json:"company_name,omitempty"`
 	LastMessageAt          *time.Time `json:"last_message_at,omitempty"`
 	LastMessage            *Preview   `json:"last_message,omitempty"`
 	CreatedAt              time.Time  `json:"created_at"`
@@ -25,6 +27,7 @@ type Preview struct {
 type ListParams struct {
 	Query     string
 	ContactID string
+	CompanyID string
 	Type      string
 	From      *time.Time
 	To        *time.Time

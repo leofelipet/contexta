@@ -231,8 +231,8 @@ func (s *Store) SetTaskSchedulesEnabled(ctx context.Context, ids []string, enabl
 	return len(timings), nil
 }
 
-// DeleteCompanies deletes the given companies; linked tasks, schedules, and
-// contacts are kept and lose their company_id.
+// DeleteCompanies deletes the given companies; linked tasks, schedules,
+// contacts, conversations, and memories are kept and lose their company_id.
 func (s *Store) DeleteCompanies(ctx context.Context, ids []string) (int, error) {
 	companyIDs, err := cleanBulkNumericIDs(ids)
 	if err != nil {

@@ -10,6 +10,8 @@ import (
 
 	"github.com/leofelipet/contexta/internal/companies"
 	"github.com/leofelipet/contexta/internal/contacts"
+	"github.com/leofelipet/contexta/internal/conversations"
+	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/tasks"
 )
 
@@ -162,6 +164,73 @@ func TestCompanies(t *testing.T) {
 		got, err = store.DetachContactFromCompany(ctx, company.ID, contactID)
 		if err != nil || got.ContactCount != 0 {
 			t.Fatalf("detach = %#v, err = %v", got, err)
+		}
+	})
+
+	t.Run("rules, links, conversations, and memories", func(t *testing.T) {
+		rules := "Avisar o Chefe."
+		links := []companies.Link{{Label: "Planilha", URL: "https://docs.google.com/spreadsheets/d/x"}}
+		company, err := store.CreateCompany(ctx, companies.CreateParams{
+			Name: "Dossier " + suffix, Notes: "cliente", Rules: rules, Links: links,
+		})
+		if err != nil || company.Rules != rules || len(company.Links) != 1 || company.Links[0].Label != "Planilha" {
+			t.Fatalf("create = %#v, err = %v", company, err)
+		}
+		if _, err := store.CreateCompany(ctx, companies.CreateParams{
+			Name: "Bad link " + suffix, Links: []companies.Link{{Label: "x", URL: "javascript:alert(1)"}},
+		}); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("bad link err = %v, want invalid argument", err)
+		}
+
+		cleared := []companies.Link{}
+		updated, err := store.UpdateCompany(ctx, company.ID, companies.UpdateParams{Links: &cleared})
+		if err != nil || len(updated.Links) != 0 || updated.Rules != rules {
+			t.Fatalf("cleared links = %#v, err = %v", updated, err)
+		}
+
+		contactID := newContact("Grupo")
+		var conversationID string
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO conversations (provider_instance_id, provider_conversation_id, contact_id, type, title)
+			SELECT provider_instance_id, $2, $1::uuid, 'group', 'Mavi Site'
+			FROM contacts WHERE id = $1::uuid
+			RETURNING id::text`, contactID, "group-"+suffix).Scan(&conversationID); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.AttachConversationToCompany(ctx, company.ID, conversationID)
+		if err != nil || got.ConversationCount != 1 {
+			t.Fatalf("attach conversation = %#v, err = %v", got, err)
+		}
+		conversation, err := store.GetConversation(ctx, conversationID)
+		if err != nil || conversation.CompanyID != company.ID || conversation.CompanyName != company.Name {
+			t.Fatalf("conversation = %#v, err = %v", conversation, err)
+		}
+		page, err := store.ListConversations(ctx, conversations.ListParams{CompanyID: company.ID})
+		if err != nil || len(page.Conversations) != 1 || page.Conversations[0].ID != conversationID {
+			t.Fatalf("conversations by company = %#v, err = %v", page.Conversations, err)
+		}
+
+		memory, err := store.CreateMemory(ctx, memories.CreateParams{
+			Title: "regra", Content: "Avisar o Chefe quando o material chegar.", CompanyID: company.ID,
+		}, nil, "", errors.New("skip embed"))
+		if err != nil || memory.CompanyID != company.ID || memory.CompanyName != company.Name {
+			t.Fatalf("memory = %#v, err = %v", memory, err)
+		}
+		memoriesPage, err := store.ListMemories(ctx, memories.ListParams{CompanyID: company.ID})
+		if err != nil || len(memoriesPage.Memories) != 1 || memoriesPage.Memories[0].ID != memory.ID {
+			t.Fatalf("memories by company = %#v, err = %v", memoriesPage.Memories, err)
+		}
+
+		if err := store.DeleteCompany(ctx, company.ID); err != nil {
+			t.Fatal(err)
+		}
+		keptConversation, err := store.GetConversation(ctx, conversationID)
+		if err != nil || keptConversation.CompanyID != "" {
+			t.Fatalf("conversation after company delete = %#v, err = %v", keptConversation, err)
+		}
+		keptMemory, err := store.GetMemory(ctx, memory.ID)
+		if err != nil || keptMemory.CompanyID != "" {
+			t.Fatalf("memory after company delete = %#v, err = %v", keptMemory, err)
 		}
 	})
 }

@@ -49,6 +49,8 @@ type Store interface {
 	DeleteCompanies(context.Context, []string) (int, error)
 	AttachContactToCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
 	DetachContactFromCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
+	AttachConversationToCompany(ctx context.Context, companyID, conversationID string) (companies.Company, error)
+	DetachConversationFromCompany(ctx context.Context, companyID, conversationID string) (companies.Company, error)
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
 	GetTask(context.Context, string) (tasks.Task, error)
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
@@ -96,8 +98,8 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("search_messages", "Search stored WhatsApp messages using text, time, contact, conversation, direction, and agent read-state filters."), s.searchMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("list_unread_messages", "List messages not yet acknowledged by a specific agent consumer. This does not mark them as read. To drain the queue, call without cursor, acknowledge the returned IDs, and call again without cursor: acknowledged messages leave the queue, so the first page always holds the next pending ones. next_cursor is only for browsing further without acknowledging; if the same messages come back, they were not acknowledged (check not_acknowledged in the acknowledge_messages result). For large backlogs use count_unread and acknowledge_messages_bulk."), s.listUnreadMessages)
 	mcp.AddTool(mcpServer, localWriteTool("acknowledge_messages", "Mark up to 100 messages by ID as processed by a specific agent consumer without changing WhatsApp data. For filter-based acknowledgment without an ID limit, use acknowledge_messages_bulk."), s.acknowledgeMessages)
-	mcp.AddTool(mcpServer, readOnlyTool("find_conversations", "Find WhatsApp conversations by title, contact, or time range."), s.findConversations)
-	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID."), s.getConversation)
+	mcp.AddTool(mcpServer, readOnlyTool("find_conversations", "Find WhatsApp conversations by title, contact, company, or time range."), s.findConversations)
+	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID. When it is linked to a company, company_rules holds that company's standing rules; follow them."), s.getConversation)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages", "Get a paginated page of messages from one conversation."), s.getMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages_around", "Get messages immediately before and after a selected message for local context."), s.getMessagesAround)
 	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts, optionally only those linked to a company."), s.listContacts)
@@ -112,11 +114,11 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, localWriteTool("delete_task", "Permanently delete a task by ID. With delete_memories=true, also permanently deletes memories linked only to this task; memories linked to other tasks are kept."), s.deleteTask)
 	mcp.AddTool(mcpServer, localWriteTool("attach_memory_to_task", "Link an existing memory to a task. A task can have unlimited memories; the same memory may link to multiple tasks."), s.attachMemoryToTask)
 	mcp.AddTool(mcpServer, localWriteTool("detach_memory_from_task", "Remove the link between a task and a memory without deleting either."), s.detachMemoryFromTask)
-	mcp.AddTool(mcpServer, readOnlyTool("search_memories", "Semantic search over saved agent memories using embeddings. Prefer this for recall by meaning."), s.searchMemories)
-	mcp.AddTool(mcpServer, readOnlyTool("list_memories", "List saved memories with optional filters for conversation, contact, source, and text query."), s.listMemories)
+	mcp.AddTool(mcpServer, readOnlyTool("search_memories", "Semantic search over saved agent memories using embeddings. Prefer this for recall by meaning. Optional company_id, conversation_id, or contact_id scopes the search."), s.searchMemories)
+	mcp.AddTool(mcpServer, readOnlyTool("list_memories", "List saved memories with optional filters for company, conversation, contact, source, and text query."), s.listMemories)
 	mcp.AddTool(mcpServer, readOnlyTool("get_memory", "Get one memory by its Contexta memory ID."), s.getMemory)
-	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically."), s.saveMemory)
-	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links. Changing content re-embeds the memory."), s.updateMemory)
+	mcp.AddTool(mcpServer, localWriteTool("save_memory", "Save a free-text note or a WhatsApp message as a memory for later semantic retrieval. Pass message_id to copy message text automatically. Optional company_id links it to a company dossier."), s.saveMemory)
+	mcp.AddTool(mcpServer, localWriteTool("update_memory", "Update memory title, content, or links (conversation, contact, company). Changing content re-embeds the memory."), s.updateMemory)
 	mcp.AddTool(mcpServer, localWriteTool("delete_memory", "Permanently delete a memory by ID."), s.deleteMemory)
 	s.addMessageReadTools(mcpServer)
 	s.addCompanyTools(mcpServer)
@@ -235,6 +237,7 @@ func (s *server) acknowledgeMessages(ctx context.Context, _ *mcp.CallToolRequest
 type findConversationsInput struct {
 	Query     string `json:"query,omitempty" jsonschema:"Text to match against conversation title or provider ID."`
 	ContactID string `json:"contact_id,omitempty" jsonschema:"Contexta contact ID."`
+	CompanyID string `json:"company_id,omitempty" jsonschema:"Only return conversations linked to this numeric company ID."`
 	Type      string `json:"type,omitempty" jsonschema:"Conversation type filter: group or direct."`
 	From      string `json:"from,omitempty" jsonschema:"Inclusive RFC3339 timestamp or YYYY-MM-DD date."`
 	To        string `json:"to,omitempty" jsonschema:"Exclusive RFC3339 timestamp or inclusive YYYY-MM-DD date."`
@@ -254,7 +257,7 @@ func (s *server) findConversations(ctx context.Context, _ *mcp.CallToolRequest, 
 		return nil, conversationsOutput{}, err
 	}
 	page, err := s.store.ListConversations(ctx, conversations.ListParams{
-		Query: input.Query, ContactID: input.ContactID, Type: input.Type, From: from, To: to,
+		Query: input.Query, ContactID: input.ContactID, CompanyID: input.CompanyID, Type: input.Type, From: from, To: to,
 		Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
@@ -270,6 +273,7 @@ type idInput struct {
 
 type conversationOutput struct {
 	Conversation conversations.Conversation `json:"conversation"`
+	CompanyRules string                     `json:"company_rules,omitempty"`
 }
 
 func (s *server) getConversation(ctx context.Context, _ *mcp.CallToolRequest, input idInput) (*mcp.CallToolResult, conversationOutput, error) {
@@ -279,7 +283,16 @@ func (s *server) getConversation(ctx context.Context, _ *mcp.CallToolRequest, in
 		s.logError(ctx, "get_conversation", err)
 		return nil, conversationOutput{}, safeToolError(err)
 	}
-	return nil, conversationOutput{Conversation: conversation}, nil
+	out := conversationOutput{Conversation: conversation}
+	if conversation.CompanyID != "" {
+		// Rules are a convenience; a lookup failure must not hide the conversation itself.
+		if company, err := s.store.GetCompany(ctx, conversation.CompanyID); err != nil {
+			s.logError(ctx, "get_conversation", err)
+		} else {
+			out.CompanyRules = company.Rules
+		}
+	}
+	return nil, out, nil
 }
 
 type getMessagesInput struct {
@@ -584,6 +597,7 @@ type searchMemoriesInput struct {
 	Query          string `json:"query" jsonschema:"Required natural-language query for semantic recall."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID filter."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID filter."`
+	CompanyID      string `json:"company_id,omitempty" jsonschema:"Optional numeric company ID filter."`
 	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum hits, up to 50."`
 }
 
@@ -597,7 +611,7 @@ func (s *server) searchMemories(ctx context.Context, _ *mcp.CallToolRequest, inp
 		return nil, memoriesSearchOutput{}, errors.New("memories unavailable")
 	}
 	result, err := s.memories.Search(ctx, memories.SearchParams{
-		Query: input.Query, ConversationID: input.ConversationID, ContactID: input.ContactID, Limit: input.Limit,
+		Query: input.Query, ConversationID: input.ConversationID, ContactID: input.ContactID, CompanyID: input.CompanyID, Limit: input.Limit,
 	})
 	if err != nil {
 		s.logError(ctx, "search_memories", err)
@@ -609,6 +623,7 @@ func (s *server) searchMemories(ctx context.Context, _ *mcp.CallToolRequest, inp
 type listMemoriesInput struct {
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Filter by linked Contexta conversation ID."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Filter by linked Contexta contact ID."`
+	CompanyID      string `json:"company_id,omitempty" jsonschema:"Filter by linked numeric company ID."`
 	Source         string `json:"source,omitempty" jsonschema:"note or message."`
 	Query          string `json:"query,omitempty" jsonschema:"Substring search against title and content."`
 	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum number of memories, up to 100."`
@@ -626,7 +641,7 @@ func (s *server) listMemories(ctx context.Context, _ *mcp.CallToolRequest, input
 		return nil, memoriesOutput{}, errors.New("memories unavailable")
 	}
 	page, err := s.memories.List(ctx, memories.ListParams{
-		ConversationID: input.ConversationID, ContactID: input.ContactID, Source: input.Source,
+		ConversationID: input.ConversationID, ContactID: input.ContactID, CompanyID: input.CompanyID, Source: input.Source,
 		Query: input.Query, Limit: mcpLimit(input.Limit), Cursor: input.Cursor,
 	})
 	if err != nil {
@@ -659,6 +674,7 @@ type saveMemoryInput struct {
 	MessageID      string `json:"message_id,omitempty" jsonschema:"Optional Contexta message UUID to persist as a memory. Loads text/transcription when content is empty."`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"Optional Contexta conversation UUID to link."`
 	ContactID      string `json:"contact_id,omitempty" jsonschema:"Optional Contexta contact UUID to link."`
+	CompanyID      string `json:"company_id,omitempty" jsonschema:"Optional numeric company ID to link."`
 }
 
 func (s *server) saveMemory(ctx context.Context, _ *mcp.CallToolRequest, input saveMemoryInput) (*mcp.CallToolResult, memoryOutput, error) {
@@ -668,7 +684,7 @@ func (s *server) saveMemory(ctx context.Context, _ *mcp.CallToolRequest, input s
 	}
 	memory, err := s.memories.Create(ctx, memories.CreateParams{
 		Title: input.Title, Content: input.Content, MessageID: input.MessageID,
-		ConversationID: input.ConversationID, ContactID: input.ContactID,
+		ConversationID: input.ConversationID, ContactID: input.ContactID, CompanyID: input.CompanyID,
 	})
 	if err != nil {
 		s.logError(ctx, "save_memory", err)
@@ -683,6 +699,7 @@ type updateMemoryInput struct {
 	Content        *string `json:"content,omitempty" jsonschema:"New content. Re-embeds when changed."`
 	ConversationID *string `json:"conversation_id,omitempty" jsonschema:"Linked conversation UUID. Empty string clears it."`
 	ContactID      *string `json:"contact_id,omitempty" jsonschema:"Linked contact UUID. Empty string clears it."`
+	CompanyID      *string `json:"company_id,omitempty" jsonschema:"Linked numeric company ID. Empty string clears it."`
 }
 
 func (s *server) updateMemory(ctx context.Context, _ *mcp.CallToolRequest, input updateMemoryInput) (*mcp.CallToolResult, memoryOutput, error) {
@@ -692,7 +709,7 @@ func (s *server) updateMemory(ctx context.Context, _ *mcp.CallToolRequest, input
 	}
 	memory, err := s.memories.Update(ctx, input.ID, memories.UpdateParams{
 		Title: input.Title, Content: input.Content,
-		ConversationID: input.ConversationID, ContactID: input.ContactID,
+		ConversationID: input.ConversationID, ContactID: input.ContactID, CompanyID: input.CompanyID,
 	})
 	if err != nil {
 		s.logError(ctx, "update_memory", err)

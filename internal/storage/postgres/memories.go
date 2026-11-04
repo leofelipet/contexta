@@ -15,16 +15,18 @@ import (
 
 const memorySelectCols = `
 	m.id::text, m.title, m.content, m.source,
-	COALESCE(m.message_id::text, ''), COALESCE(m.conversation_id::text, ''), COALESCE(m.contact_id::text, ''),
+	COALESCE(m.message_id::text, ''), COALESCE(m.conversation_id::text, ''), COALESCE(m.contact_id::text, ''), COALESCE(m.company_id::text, ''),
 	COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
 	COALESCE(NULLIF(ct.name, ''), NULLIF(ct.push_name, ''), NULLIF(ct.phone, ''), ''),
+	COALESCE(co.name, ''),
 	m.embedding_status, m.embedding_model, m.embedding_error, m.created_at, m.updated_at`
 
 const memoryJoins = `
 	FROM memories m
 	LEFT JOIN conversations c ON c.id = m.conversation_id
 	LEFT JOIN contacts cc ON cc.id = c.contact_id
-	LEFT JOIN contacts ct ON ct.id = m.contact_id`
+	LEFT JOIN contacts ct ON ct.id = m.contact_id
+	LEFT JOIN companies co ON co.id = m.company_id`
 
 func (s *Store) ListMemories(ctx context.Context, params memories.ListParams) (memories.Page, error) {
 	limit := normalizeLimit(params.Limit, 50)
@@ -44,6 +46,14 @@ func (s *Store) ListMemories(ctx context.Context, params memories.ListParams) (m
 	if params.Source != "" && !memories.ValidSource(params.Source) {
 		return memories.Page{}, ErrInvalidArgument
 	}
+	var companyID any
+	if params.CompanyID != "" {
+		parsed, err := parseTaskID(params.CompanyID)
+		if err != nil {
+			return memories.Page{}, err
+		}
+		companyID = parsed
+	}
 
 	query := strings.TrimSpace(params.Query)
 	rows, err := s.pool.Query(ctx, `
@@ -51,12 +61,13 @@ func (s *Store) ListMemories(ctx context.Context, params memories.ListParams) (m
 		WHERE ($1::timestamptz IS NULL OR (m.created_at, m.id) < ($1, $2::uuid))
 		  AND ($3::uuid IS NULL OR m.contact_id = $3::uuid)
 		  AND ($4::uuid IS NULL OR m.conversation_id = $4::uuid)
-		  AND ($5 = '' OR m.source = $5)
-		  AND ($6 = '' OR m.title ILIKE '%' || $6 || '%' OR m.content ILIKE '%' || $6 || '%')
+		  AND ($5::bigint IS NULL OR m.company_id = $5::bigint)
+		  AND ($6 = '' OR m.source = $6)
+		  AND ($7 = '' OR m.title ILIKE '%' || $7 || '%' OR m.content ILIKE '%' || $7 || '%')
 		ORDER BY m.created_at DESC, m.id DESC
-		LIMIT $7`,
+		LIMIT $8`,
 		nullableTime(cursor.Time), nullableUUID(cursor.ID),
-		nullableUUID(params.ContactID), nullableUUID(params.ConversationID),
+		nullableUUID(params.ContactID), nullableUUID(params.ConversationID), companyID,
 		params.Source, query, limit+1,
 	)
 	if err != nil {
@@ -143,6 +154,10 @@ func (s *Store) CreateMemory(ctx context.Context, params memories.CreateParams, 
 	messageID := strings.TrimSpace(params.MessageID)
 	conversationID := strings.TrimSpace(params.ConversationID)
 	contactID := strings.TrimSpace(params.ContactID)
+	companyID, err := s.optionalCompanyID(ctx, params.CompanyID)
+	if err != nil {
+		return memories.Memory{}, err
+	}
 	if messageID != "" {
 		if !isUUID(messageID) {
 			return memories.Memory{}, ErrInvalidArgument
@@ -188,16 +203,16 @@ func (s *Store) CreateMemory(ctx context.Context, params memories.CreateParams, 
 	}
 
 	var id string
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO memories (
-			title, content, source, message_id, conversation_id, contact_id,
+			title, content, source, message_id, conversation_id, contact_id, company_id,
 			embedding, embedding_status, embedding_model, embedding_error
 		) VALUES (
-			$1, $2, $3, $4::uuid, $5::uuid, $6::uuid,
-			$7, $8, $9, $10
+			$1, $2, $3, $4::uuid, $5::uuid, $6::uuid, $7::bigint,
+			$8, $9, $10, $11
 		) RETURNING id::text`,
 		title, content, source,
-		nullableUUID(messageID), nullableUUID(conversationID), nullableUUID(contactID),
+		nullableUUID(messageID), nullableUUID(conversationID), nullableUUID(contactID), companyID,
 		vector, status, model, errorText,
 	).Scan(&id)
 	if err != nil {
@@ -261,6 +276,14 @@ func (s *Store) UpdateMemory(ctx context.Context, id string, params memories.Upd
 			}
 		}
 	}
+	companyID := nullableTaskID(current.CompanyID)
+	if params.CompanyID != nil {
+		parsed, err := s.optionalCompanyID(ctx, *params.CompanyID)
+		if err != nil {
+			return memories.Memory{}, err
+		}
+		companyID = parsed
+	}
 
 	status := current.EmbeddingStatus
 	errorText := current.EmbeddingError
@@ -293,14 +316,15 @@ func (s *Store) UpdateMemory(ctx context.Context, id string, params memories.Upd
 				content = $3,
 				conversation_id = $4::uuid,
 				contact_id = $5::uuid,
-				embedding = $6,
-				embedding_status = $7,
-				embedding_model = $8,
-				embedding_error = $9,
+				company_id = $6::bigint,
+				embedding = $7,
+				embedding_status = $8,
+				embedding_model = $9,
+				embedding_error = $10,
 				updated_at = now()
 			WHERE id = $1`,
 			id, title, content,
-			nullableUUID(conversationID), nullableUUID(contactID),
+			nullableUUID(conversationID), nullableUUID(contactID), companyID,
 			vector, status, embedModel, errorText,
 		)
 		if err != nil {
@@ -316,10 +340,11 @@ func (s *Store) UpdateMemory(ctx context.Context, id string, params memories.Upd
 				content = $3,
 				conversation_id = $4::uuid,
 				contact_id = $5::uuid,
+				company_id = $6::bigint,
 				updated_at = now()
 			WHERE id = $1`,
 			id, title, content,
-			nullableUUID(conversationID), nullableUUID(contactID),
+			nullableUUID(conversationID), nullableUUID(contactID), companyID,
 		)
 		if err != nil {
 			return memories.Memory{}, fmt.Errorf("update memory: %w", err)
@@ -358,6 +383,14 @@ func (s *Store) SearchMemories(ctx context.Context, params memories.SearchParams
 	if params.ConversationID != "" && !isUUID(params.ConversationID) {
 		return memories.SearchResult{}, ErrInvalidArgument
 	}
+	var companyID any
+	if params.CompanyID != "" {
+		parsed, err := parseTaskID(params.CompanyID)
+		if err != nil {
+			return memories.SearchResult{}, err
+		}
+		companyID = parsed
+	}
 	limit := normalizeLimit(params.Limit, 20)
 	if limit > 50 {
 		limit = 50
@@ -371,11 +404,13 @@ func (s *Store) SearchMemories(ctx context.Context, params memories.SearchParams
 		  AND m.embedding_status = 'ready'
 		  AND ($2::uuid IS NULL OR m.contact_id = $2::uuid)
 		  AND ($3::uuid IS NULL OR m.conversation_id = $3::uuid)
+		  AND ($4::bigint IS NULL OR m.company_id = $4::bigint)
 		ORDER BY m.embedding <=> $1
-		LIMIT $4`,
+		LIMIT $5`,
 		pgvector.NewVector(queryEmbedding),
 		nullableUUID(params.ContactID),
 		nullableUUID(params.ConversationID),
+		companyID,
 		limit,
 	)
 	if err != nil {
@@ -408,8 +443,8 @@ func scanMemory(row memoryScanner) (memories.Memory, error) {
 	var item memories.Memory
 	if err := row.Scan(
 		&item.ID, &item.Title, &item.Content, &item.Source,
-		&item.MessageID, &item.ConversationID, &item.ContactID,
-		&item.ConversationTitle, &item.ContactName,
+		&item.MessageID, &item.ConversationID, &item.ContactID, &item.CompanyID,
+		&item.ConversationTitle, &item.ContactName, &item.CompanyName,
 		&item.EmbeddingStatus, &item.EmbeddingModel, &item.EmbeddingError,
 		&item.CreatedAt, &item.UpdatedAt,
 	); err != nil {
@@ -423,8 +458,8 @@ func scanMemoryWithScore(row memoryScanner) (memories.Memory, float64, error) {
 	var score float64
 	if err := row.Scan(
 		&item.ID, &item.Title, &item.Content, &item.Source,
-		&item.MessageID, &item.ConversationID, &item.ContactID,
-		&item.ConversationTitle, &item.ContactName,
+		&item.MessageID, &item.ConversationID, &item.ContactID, &item.CompanyID,
+		&item.ConversationTitle, &item.ContactName, &item.CompanyName,
 		&item.EmbeddingStatus, &item.EmbeddingModel, &item.EmbeddingError,
 		&item.CreatedAt, &item.UpdatedAt, &score,
 	); err != nil {

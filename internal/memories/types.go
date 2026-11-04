@@ -31,8 +31,10 @@ type Memory struct {
 	MessageID         string    `json:"message_id,omitempty"`
 	ConversationID    string    `json:"conversation_id,omitempty"`
 	ContactID         string    `json:"contact_id,omitempty"`
+	CompanyID         string    `json:"company_id,omitempty"`
 	ConversationTitle string    `json:"conversation_title,omitempty"`
 	ContactName       string    `json:"contact_name,omitempty"`
+	CompanyName       string    `json:"company_name,omitempty"`
 	EmbeddingStatus   string    `json:"embedding_status"`
 	EmbeddingModel    string    `json:"embedding_model,omitempty"`
 	EmbeddingError    string    `json:"embedding_error,omitempty"`
@@ -47,6 +49,7 @@ type CreateParams struct {
 	MessageID      string
 	ConversationID string
 	ContactID      string
+	CompanyID      string
 }
 
 type UpdateParams struct {
@@ -54,11 +57,13 @@ type UpdateParams struct {
 	Content        *string
 	ConversationID *string
 	ContactID      *string
+	CompanyID      *string
 }
 
 type ListParams struct {
 	ConversationID string
 	ContactID      string
+	CompanyID      string
 	Source         string
 	Query          string
 	Limit          int
@@ -74,6 +79,7 @@ type SearchParams struct {
 	Query          string
 	ConversationID string
 	ContactID      string
+	CompanyID      string
 	Limit          int
 }
 

@@ -9,17 +9,25 @@ import (
 )
 
 type createCompanyRequest struct {
-	Name  string `json:"name"`
-	Notes string `json:"notes"`
+	Name  string           `json:"name"`
+	Notes string           `json:"notes"`
+	Rules string           `json:"rules"`
+	Links []companies.Link `json:"links"`
 }
 
 type updateCompanyRequest struct {
-	Name  *string `json:"name"`
-	Notes *string `json:"notes"`
+	Name  *string           `json:"name"`
+	Notes *string           `json:"notes"`
+	Rules *string           `json:"rules"`
+	Links *[]companies.Link `json:"links"`
 }
 
 type attachCompanyContactRequest struct {
 	ContactID string `json:"contact_id"`
+}
+
+type attachCompanyConversationRequest struct {
+	ConversationID string `json:"conversation_id"`
 }
 
 func (h *handler) listCompanies(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +59,9 @@ func (h *handler) createCompany(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	company, err := h.store.CreateCompany(r.Context(), companies.CreateParams{Name: request.Name, Notes: request.Notes})
+	company, err := h.store.CreateCompany(r.Context(), companies.CreateParams{
+		Name: request.Name, Notes: request.Notes, Rules: request.Rules, Links: request.Links,
+	})
 	if err != nil {
 		h.handleStoreError(w, err)
 		return
@@ -72,7 +82,7 @@ func (h *handler) updateCompany(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	company, err := h.store.UpdateCompany(r.Context(), r.PathValue("id"), companies.UpdateParams{
-		Name: request.Name, Notes: request.Notes,
+		Name: request.Name, Notes: request.Notes, Rules: request.Rules, Links: request.Links,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -116,6 +126,31 @@ func (h *handler) attachCompanyContact(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) detachCompanyContact(w http.ResponseWriter, r *http.Request) {
 	company, err := h.store.DetachContactFromCompany(r.Context(), r.PathValue("id"), r.PathValue("contact_id"))
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, company)
+}
+
+func (h *handler) attachCompanyConversation(w http.ResponseWriter, r *http.Request) {
+	var request attachCompanyConversationRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIWriteBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	company, err := h.store.AttachConversationToCompany(r.Context(), r.PathValue("id"), request.ConversationID)
+	if err != nil {
+		h.handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, company)
+}
+
+func (h *handler) detachCompanyConversation(w http.ResponseWriter, r *http.Request) {
+	company, err := h.store.DetachConversationFromCompany(r.Context(), r.PathValue("id"), r.PathValue("conversation_id"))
 	if err != nil {
 		h.handleStoreError(w, err)
 		return

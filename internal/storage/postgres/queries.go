@@ -154,15 +154,25 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 	if params.Cursor != "" && (cursor.Time.IsZero() || !isUUID(cursor.ID)) {
 		return conversations.Page{}, pagination.ErrInvalidCursor
 	}
+	var companyID any
+	if params.CompanyID != "" {
+		parsed, err := parseTaskID(params.CompanyID)
+		if err != nil {
+			return conversations.Page{}, err
+		}
+		companyID = parsed
+	}
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.id::text, c.provider_conversation_id, COALESCE(c.contact_id::text, ''), c.type,
 		       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
+		       COALESCE(c.company_id::text, ''), COALESCE(co.name, ''),
 		       c.last_message_at, c.created_at, c.updated_at,
 		       lm.id::text, lm.direction, lm.type, lm.display_text, lm.occurred_at,
 		       COALESCE(c.last_message_at, c.created_at) AS sort_time
 		FROM conversations c
 		LEFT JOIN contacts cc ON cc.id = c.contact_id
+		LEFT JOIN companies co ON co.id = c.company_id
 		LEFT JOIN LATERAL (
 			SELECT id, direction, type, COALESCE(NULLIF(text, ''), transcription_text) AS display_text, occurred_at
 			FROM messages WHERE conversation_id = c.id
@@ -174,9 +184,10 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 		  AND ($4::timestamptz IS NULL OR c.last_message_at >= $4)
 		  AND ($5::timestamptz IS NULL OR c.last_message_at < $5)
 		  AND ($6::timestamptz IS NULL OR (COALESCE(c.last_message_at, c.created_at), c.id) < ($6, $7::uuid))
+		  AND ($8::bigint IS NULL OR c.company_id = $8::bigint)
 		ORDER BY sort_time DESC, c.id DESC
-		LIMIT $8`, params.Query, nullableUUID(params.ContactID), params.Type, params.From, params.To,
-		nullableTime(cursor.Time), nullableUUID(cursor.ID), limit+1)
+		LIMIT $9`, params.Query, nullableUUID(params.ContactID), params.Type, params.From, params.To,
+		nullableTime(cursor.Time), nullableUUID(cursor.ID), companyID, limit+1)
 	if err != nil {
 		return conversations.Page{}, fmt.Errorf("list conversations: %w", err)
 	}
@@ -193,6 +204,7 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 		var previewTimestamp *time.Time
 		if err := rows.Scan(&current.conversation.ID, &current.conversation.ProviderConversationID,
 			&current.conversation.ContactID, &current.conversation.Type, &current.conversation.Title,
+			&current.conversation.CompanyID, &current.conversation.CompanyName,
 			&current.conversation.LastMessageAt, &current.conversation.CreatedAt,
 			&current.conversation.UpdatedAt, &previewID, &previewDirection, &previewType,
 			&previewText, &previewTimestamp, &current.sortTime); err != nil {
@@ -229,10 +241,12 @@ func (s *Store) GetConversation(ctx context.Context, id string) (conversations.C
 	row := s.pool.QueryRow(ctx, `
 		SELECT c.id::text, c.provider_conversation_id, COALESCE(c.contact_id::text, ''), c.type,
 		       COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), ''),
+		       COALESCE(c.company_id::text, ''), COALESCE(co.name, ''),
 		       c.last_message_at, c.created_at, c.updated_at,
 		       lm.id::text, lm.direction, lm.type, lm.display_text, lm.occurred_at
 		FROM conversations c
 		LEFT JOIN contacts cc ON cc.id = c.contact_id
+		LEFT JOIN companies co ON co.id = c.company_id
 		LEFT JOIN LATERAL (
 			SELECT id, direction, type, COALESCE(NULLIF(text, ''), transcription_text) AS display_text, occurred_at
 			FROM messages WHERE conversation_id = c.id
@@ -243,8 +257,8 @@ func (s *Store) GetConversation(ctx context.Context, id string) (conversations.C
 	var previewTimestamp *time.Time
 	err := row.Scan(
 		&conversation.ID, &conversation.ProviderConversationID, &conversation.ContactID,
-		&conversation.Type, &conversation.Title, &conversation.LastMessageAt,
-		&conversation.CreatedAt, &conversation.UpdatedAt, &previewID, &previewDirection,
+		&conversation.Type, &conversation.Title, &conversation.CompanyID, &conversation.CompanyName,
+		&conversation.LastMessageAt, &conversation.CreatedAt, &conversation.UpdatedAt, &previewID, &previewDirection,
 		&previewType, &previewText, &previewTimestamp,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -71,6 +71,8 @@ type Store interface {
 	DeleteCompanies(context.Context, []string) (int, error)
 	AttachContactToCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
 	DetachContactFromCompany(ctx context.Context, companyID, contactID string) (companies.Company, error)
+	AttachConversationToCompany(ctx context.Context, companyID, conversationID string) (companies.Company, error)
+	DetachConversationFromCompany(ctx context.Context, companyID, conversationID string) (companies.Company, error)
 	ListTasks(context.Context, tasks.ListParams) (tasks.Page, error)
 	GetTask(context.Context, string) (tasks.Task, error)
 	CreateTask(context.Context, tasks.CreateParams) (tasks.Task, error)
@@ -184,6 +186,8 @@ func New(options Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/companies/{id}", handler.deleteCompany)
 	api.HandleFunc("POST /api/v1/companies/{id}/contacts", handler.attachCompanyContact)
 	api.HandleFunc("DELETE /api/v1/companies/{id}/contacts/{contact_id}", handler.detachCompanyContact)
+	api.HandleFunc("POST /api/v1/companies/{id}/conversations", handler.attachCompanyConversation)
+	api.HandleFunc("DELETE /api/v1/companies/{id}/conversations/{conversation_id}", handler.detachCompanyConversation)
 	api.HandleFunc("GET /api/v1/tasks", handler.listTasks)
 	api.HandleFunc("GET /api/v1/tasks/{id}", handler.getTask)
 	api.HandleFunc("POST /api/v1/tasks", handler.createTask)
@@ -397,7 +401,7 @@ func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := h.store.ListConversations(r.Context(), conversations.ListParams{
 		Query: r.URL.Query().Get("query"), ContactID: r.URL.Query().Get("contact_id"),
-		Type: r.URL.Query().Get("type"),
+		CompanyID: r.URL.Query().Get("company_id"), Type: r.URL.Query().Get("type"),
 		From: from, To: to, Limit: parseLimit(r), Cursor: r.URL.Query().Get("cursor"),
 	})
 	if err != nil {
@@ -793,6 +797,7 @@ func (h *handler) listMemories(w http.ResponseWriter, r *http.Request) {
 	page, err := h.memories.List(r.Context(), memories.ListParams{
 		ConversationID: query.Get("conversation_id"),
 		ContactID:      query.Get("contact_id"),
+		CompanyID:      query.Get("company_id"),
 		Source:         query.Get("source"),
 		Query:          query.Get("q"),
 		Limit:          parseLimit(r),
@@ -825,6 +830,7 @@ type createMemoryRequest struct {
 	MessageID      string `json:"message_id"`
 	ConversationID string `json:"conversation_id"`
 	ContactID      string `json:"contact_id"`
+	CompanyID      string `json:"company_id"`
 }
 
 func (h *handler) createMemory(w http.ResponseWriter, r *http.Request) {
@@ -842,6 +848,7 @@ func (h *handler) createMemory(w http.ResponseWriter, r *http.Request) {
 	memory, err := h.memories.Create(r.Context(), memories.CreateParams{
 		Title: request.Title, Content: request.Content, Source: request.Source,
 		MessageID: request.MessageID, ConversationID: request.ConversationID, ContactID: request.ContactID,
+		CompanyID: request.CompanyID,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -859,6 +866,7 @@ type updateMemoryRequest struct {
 	Content        *string `json:"content"`
 	ConversationID *string `json:"conversation_id"`
 	ContactID      *string `json:"contact_id"`
+	CompanyID      *string `json:"company_id"`
 }
 
 func (h *handler) updateMemory(w http.ResponseWriter, r *http.Request) {
@@ -876,7 +884,7 @@ func (h *handler) updateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	memory, err := h.memories.Update(r.Context(), id, memories.UpdateParams{
 		Title: request.Title, Content: request.Content,
-		ConversationID: request.ConversationID, ContactID: request.ContactID,
+		ConversationID: request.ConversationID, ContactID: request.ContactID, CompanyID: request.CompanyID,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)
@@ -910,6 +918,7 @@ type searchMemoriesRequest struct {
 	Query          string `json:"query"`
 	ConversationID string `json:"conversation_id"`
 	ContactID      string `json:"contact_id"`
+	CompanyID      string `json:"company_id"`
 	Limit          int    `json:"limit"`
 }
 
@@ -927,7 +936,7 @@ func (h *handler) searchMemories(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.memories.Search(r.Context(), memories.SearchParams{
 		Query: request.Query, ConversationID: request.ConversationID,
-		ContactID: request.ContactID, Limit: request.Limit,
+		ContactID: request.ContactID, CompanyID: request.CompanyID, Limit: request.Limit,
 	})
 	if err != nil {
 		h.handleStoreError(w, err)

@@ -124,12 +124,14 @@ The tools are annotated as destructive and their descriptions require the user's
 
 ## Companies
 
-Companies group tasks, recurring schedules, and WhatsApp contacts. A company has a unique name (case-insensitive) and free-text notes; each task, schedule, and contact links to at most one company through `company_id`.
+Companies group tasks, recurring schedules, WhatsApp contacts, conversations, and memories. A company has a unique name (case-insensitive), free-text notes, standing `rules`, and `links` (`[{label,url}]`, http/https only). Each task, schedule, contact, conversation, and memory links to at most one company through `company_id`.
 
-- `GET /api/v1/tasks?company_id=`, `GET /api/v1/contacts?company_id=`, and `GET /api/v1/task-schedules?company_id=` list what is linked to a company. `list_tasks` also accepts `company` as a name substring.
+- `GET /api/v1/tasks?company_id=`, `GET /api/v1/contacts?company_id=`, `GET /api/v1/conversations?company_id=`, `GET /api/v1/memories?company_id=`, and `GET /api/v1/task-schedules?company_id=` list what is linked to a company. `list_tasks` also accepts `company` as a name substring.
+- MCP `get_company` returns a dossier: cadastro plus contacts, conversations, open tasks, schedules, and up to 20 memories.
+- MCP `get_conversation` includes `company_rules` when the conversation is linked to a company, so the agent sees the standing rules while handling it.
 - A task created with a `contact_id` and no `company_id` inherits the contact's company.
-- Deleting a company keeps its tasks, schedules, and contacts, which lose the link.
-- Migration `013` converted the previous free-text `company` field of tasks and schedules into companies, merging names that differ only by case or surrounding whitespace.
+- Deleting a company keeps its tasks, schedules, contacts, conversations, and memories, which lose the link.
+- Migration `013` converted the previous free-text `company` field of tasks and schedules into companies, merging names that differ only by case or surrounding whitespace. Migration `018` added rules, links, and `company_id` on memories and conversations.
 
 ## Recurring tasks
 
@@ -207,6 +209,8 @@ PATCH /api/v1/companies/{id}
 DELETE /api/v1/companies/{id}
 POST /api/v1/companies/{id}/contacts
 DELETE /api/v1/companies/{id}/contacts/{contact_id}
+POST /api/v1/companies/{id}/conversations
+DELETE /api/v1/companies/{id}/conversations/{conversation_id}
 GET /api/v1/email-accounts
 POST /api/v1/email-accounts
 GET /api/v1/email-accounts/{id}
@@ -260,6 +264,8 @@ delete_company
 delete_companies
 attach_contact_to_company
 detach_contact_from_company
+attach_conversation_to_company
+detach_conversation_from_company
 list_task_schedules
 get_task_schedule
 create_task_schedule
