@@ -99,7 +99,7 @@ func (s *server) addTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, readOnlyTool("list_unread_messages", "List messages not yet acknowledged by a specific agent consumer. This does not mark them as read. To drain the queue, call without cursor, acknowledge the returned IDs, and call again without cursor: acknowledged messages leave the queue, so the first page always holds the next pending ones. next_cursor is only for browsing further without acknowledging; if the same messages come back, they were not acknowledged (check not_acknowledged in the acknowledge_messages result). For large backlogs use count_unread and acknowledge_messages_bulk."), s.listUnreadMessages)
 	mcp.AddTool(mcpServer, localWriteTool("acknowledge_messages", "Mark up to 100 messages by ID as processed by a specific agent consumer without changing WhatsApp data. For filter-based acknowledgment without an ID limit, use acknowledge_messages_bulk."), s.acknowledgeMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("find_conversations", "Find WhatsApp conversations by title, contact, company, or time range."), s.findConversations)
-	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID. When it is linked to a company, company_rules holds that company's standing rules; follow them."), s.getConversation)
+	mcp.AddTool(mcpServer, readOnlyTool("get_conversation", "Get one conversation by its Contexta conversation ID. When it is linked to a company (or, for a direct chat, its contact is), company_rules holds that company's standing rules; follow them."), s.getConversation)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages", "Get a paginated page of messages from one conversation."), s.getMessages)
 	mcp.AddTool(mcpServer, readOnlyTool("get_messages_around", "Get messages immediately before and after a selected message for local context."), s.getMessagesAround)
 	mcp.AddTool(mcpServer, readOnlyTool("list_contacts", "List or search stored WhatsApp contacts, optionally only those linked to a company."), s.listContacts)
@@ -284,9 +284,18 @@ func (s *server) getConversation(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, conversationOutput{}, safeToolError(err)
 	}
 	out := conversationOutput{Conversation: conversation}
-	if conversation.CompanyID != "" {
-		// Rules are a convenience; a lookup failure must not hide the conversation itself.
-		if company, err := s.store.GetCompany(ctx, conversation.CompanyID); err != nil {
+	// Rules are a convenience; a lookup failure must not hide the conversation itself.
+	companyID := conversation.CompanyID
+	if companyID == "" && conversation.ContactID != "" && conversation.Type != "group" {
+		// A direct chat inherits its contact's company.
+		if contact, err := s.store.GetContact(ctx, conversation.ContactID); err != nil {
+			s.logError(ctx, "get_conversation", err)
+		} else {
+			companyID = contact.CompanyID
+		}
+	}
+	if companyID != "" {
+		if company, err := s.store.GetCompany(ctx, companyID); err != nil {
 			s.logError(ctx, "get_conversation", err)
 		} else {
 			out.CompanyRules = company.Rules

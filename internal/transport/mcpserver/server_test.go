@@ -570,6 +570,20 @@ func (companyConversationStore) GetCompany(_ context.Context, id string) (compan
 	return companies.Company{ID: id, Name: "ACME", Rules: "Faturar até dia 5."}, nil
 }
 
+// directConversationStore has an unlinked chat whose contact belongs to company 9.
+type directConversationStore struct {
+	companyConversationStore
+	conversationType string
+}
+
+func (s directConversationStore) GetConversation(context.Context, string) (conversations.Conversation, error) {
+	return conversations.Conversation{ID: "conversation-1", ContactID: "contact-1", Type: s.conversationType}, nil
+}
+
+func (directConversationStore) GetContact(context.Context, string) (contacts.Contact, error) {
+	return contacts.Contact{ID: "contact-1", CompanyID: "9"}, nil
+}
+
 func TestMCPGetConversationIncludesCompanyRules(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -577,6 +591,8 @@ func TestMCPGetConversationIncludesCompanyRules(t *testing.T) {
 		want  string
 	}{
 		{companyConversationStore{}, "Faturar até dia 5."},
+		{directConversationStore{conversationType: "direct"}, "Faturar até dia 5."},
+		{directConversationStore{conversationType: "group"}, ""},
 		{fakeStore{}, ""},
 	} {
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))

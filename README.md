@@ -128,7 +128,7 @@ Companies group tasks, recurring schedules, WhatsApp contacts, conversations, an
 
 - `GET /api/v1/tasks?company_id=`, `GET /api/v1/contacts?company_id=`, `GET /api/v1/conversations?company_id=`, `GET /api/v1/memories?company_id=`, and `GET /api/v1/task-schedules?company_id=` list what is linked to a company. `list_tasks` also accepts `company` as a name substring.
 - MCP `get_company` returns a dossier: cadastro plus contacts, conversations, open tasks, schedules, and up to 20 memories.
-- MCP `get_conversation` includes `company_rules` when the conversation is linked to a company, so the agent sees the standing rules while handling it.
+- MCP `get_conversation` includes `company_rules` when the conversation is linked to a company, or, for an unlinked direct chat, when its contact is. The agent sees the standing rules while handling it.
 - A task created with a `contact_id` and no `company_id` inherits the contact's company.
 - Deleting a company keeps its tasks, schedules, contacts, conversations, and memories, which lose the link.
 - Migration `013` converted the previous free-text `company` field of tasks and schedules into companies, merging names that differ only by case or surrounding whitespace. Migration `018` added rules, links, and `company_id` on memories and conversations.
