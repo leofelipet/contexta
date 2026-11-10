@@ -232,6 +232,8 @@ PATCH /api/v1/reminders/{id}
 DELETE /api/v1/reminders/{id}
 GET /api/v1/mcp/status
 GET /api/v1/activity
+GET /api/v1/android/update
+GET /api/v1/android/apk
 ```
 
 Common message filters are `query`, `from`, `to`, `contact_id`, `conversation_id`, `direction`, `type`, `consumer_id`, `read_state`, `limit`, and `cursor`. Dates accept RFC3339 or `YYYY-MM-DD` in UTC.
@@ -308,6 +310,18 @@ To drain the queue, call `list_unread_messages` without `cursor`, acknowledge th
 For large backlogs, `count_unread` returns the unread total grouped by month (`timezone` defaults to `America/Sao_Paulo`), and `acknowledge_messages_bulk` marks every unread message matching `before` (required, exclusive), `after`, `conversation_id`, `contact_id`, and `direction` (`incoming`, `outgoing`, or `all`) in one server-side statement. Run it with `dry_run: true` first; filters covering more than 5,000 unread messages require `confirm: true`.
 
 All existing messages start unread for a new consumer. Audio messages with an active transcription job are held out of the unread queue until transcription completes or permanently fails. Acknowledgement only writes local read receipts; it never modifies or sends WhatsApp messages.
+
+## Android updates
+
+Optional. Set `ANDROID_DIST_DIR` to a directory containing `latest.json` and `app.apk` (the APK is built in the [contexta-android](https://github.com/leofelipet/contexta-android) GitHub Actions workflow, then copied here). The two routes above require the API bearer token. Missing files return 404; the server never embeds an APK.
+
+`latest.json`:
+
+```json
+{ "version_code": 2, "version_name": "1.0.1", "notes": "optional" }
+```
+
+`version_code` must match the Android `versionCode` of `app.apk`. The handler reads the files on each request.
 
 ## Webhook fixtures
 

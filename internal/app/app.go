@@ -111,7 +111,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
 		TrelloWebhookSecret: cfg.Trello.WebhookSecret,
 		UAZAPIClient:        uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
-		Realtime: realtime.NewHub(),
+		Realtime: realtime.NewHub(), AndroidDistDir: cfg.AndroidDistDir,
 	})
 
 	root := http.NewServeMux()

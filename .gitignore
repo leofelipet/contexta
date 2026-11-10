@@ -5,3 +5,5 @@ bin/
 coverage.out
 *.test
 .playwright-mcp/
+*.jks
+*.keystore

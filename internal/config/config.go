@@ -24,6 +24,7 @@ type Config struct {
 	MCPToken            string
 	MCPEnabled          bool
 	SchedulerEnabled    bool
+	AndroidDistDir      string
 	EmailCredentialsKey []byte
 	UAZAPI              UAZAPI
 	Trello              Trello
@@ -87,6 +88,7 @@ func Load() (Config, error) {
 		MCPToken:         os.Getenv("MCP_BEARER_TOKEN"),
 		MCPEnabled:       mcpEnabled,
 		SchedulerEnabled: schedulerEnabled,
+		AndroidDistDir:   strings.TrimRight(os.Getenv("ANDROID_DIST_DIR"), "/"),
 		UAZAPI: UAZAPI{
 			BaseURL:          strings.TrimRight(os.Getenv("UAZAPI_BASE_URL"), "/"),
 			Token:            os.Getenv("UAZAPI_TOKEN"),

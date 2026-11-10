@@ -125,6 +125,7 @@ type Options struct {
 	StartedAt           time.Time
 	Logger              *slog.Logger
 	Realtime            *realtime.Hub
+	AndroidDistDir      string
 }
 
 func New(options Options) http.Handler {
@@ -148,6 +149,7 @@ func New(options Options) http.Handler {
 		mcpEnabled:          options.MCPEnabled,
 		startedAt:           startedAt,
 		logger:              options.Logger,
+		androidDistDir:      options.AndroidDistDir,
 		realtime:            options.Realtime,
 	}
 
@@ -233,6 +235,8 @@ func New(options Options) http.Handler {
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
 	api.HandleFunc("GET /api/v1/activity", handler.listActivity)
 	api.HandleFunc("GET /api/v1/events", handler.events)
+	api.HandleFunc("GET /api/v1/android/update", handler.androidUpdate)
+	api.HandleFunc("GET /api/v1/android/apk", handler.androidApk)
 	api.HandleFunc("GET /api/v1/admin-passkeys", handler.listAdminPasskeys)
 	api.HandleFunc("POST /api/v1/admin-passkeys", handler.createAdminPasskey)
 	api.HandleFunc("PATCH /api/v1/admin-passkeys/{id}", handler.updateAdminPasskey)
@@ -259,6 +263,7 @@ type handler struct {
 	startedAt           time.Time
 	logger              *slog.Logger
 	realtime            *realtime.Hub
+	androidDistDir      string
 }
 
 func (h *handler) live(w http.ResponseWriter, _ *http.Request) {
