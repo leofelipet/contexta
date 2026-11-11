@@ -37,6 +37,9 @@ type Notification struct {
 // notification but retries reminders up to MaxReminderAttempts.
 type Notifier func(context.Context, Notification) error
 
+// DiscardNotifications marks reminder delivery as succeeded without Pushover.
+func DiscardNotifications(context.Context, Notification) error { return nil }
+
 // Reminder is a one-off Pushover notification delivered at SendAt.
 type Reminder struct {
 	ID        string     `json:"id"`

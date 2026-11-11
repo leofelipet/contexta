@@ -70,6 +70,13 @@ func TestWorkerRunsSchedulesAndRemindersAtStartup(t *testing.T) {
 	}
 }
 
+func TestDiscardNotificationsSucceeds(t *testing.T) {
+	t.Parallel()
+	if err := DiscardNotifications(context.Background(), Notification{Message: "x"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWorkerWithoutNotifierSkipsReminders(t *testing.T) {
 	t.Parallel()
 	runner := fakeRunner{schedules: make(chan Notifier, 1), reminders: make(chan Notifier, 1)}

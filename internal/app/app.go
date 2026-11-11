@@ -103,7 +103,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		go worker.Run(ctx)
 	}
 	if cfg.SchedulerEnabled {
-		go schedules.NewWorker(store, pushoverService.Notify, logger).Run(ctx)
+		go schedules.NewWorker(store, schedules.DiscardNotifications, logger).Run(ctx)
 	}
 	apiHandler := httpapi.New(httpapi.Options{
 		Store: store, Memories: memoriesService, Email: emailService, Pushover: pushoverService, Trello: trelloService, Ingestion: ingestionService, APIToken: cfg.APIToken,
