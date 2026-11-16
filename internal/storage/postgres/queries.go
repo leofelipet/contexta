@@ -43,10 +43,10 @@ func (s *Store) ListContacts(ctx context.Context, params contacts.ListParams) (c
 		SELECT `+contactSelectCols+`
 		FROM contacts c
 		LEFT JOIN companies co ON co.id = c.company_id
-		WHERE ($1 = '' OR `+contactDisplayNameSQL("c")+` ILIKE '%' || $1 || '%'
+		WHERE ($1 = '' OR unaccent(`+contactDisplayNameSQL("c")+`) ILIKE '%' || unaccent($1) || '%'
 		           OR c.phone ILIKE '%' || $1 || '%'
-		           OR c.name ILIKE '%' || $1 || '%'
-		           OR c.push_name ILIKE '%' || $1 || '%')
+		           OR unaccent(c.name) ILIKE '%' || unaccent($1) || '%'
+		           OR unaccent(c.push_name) ILIKE '%' || unaccent($1) || '%')
 		  AND ($2 = '' OR (lower(`+contactDisplayNameSQL("c")+`), c.id) > (lower($2), $3::uuid))
 		  AND ($4::bigint IS NULL OR c.company_id = $4::bigint)
 		ORDER BY lower(`+contactDisplayNameSQL("c")+`), c.id
@@ -178,7 +178,7 @@ func (s *Store) ListConversations(ctx context.Context, params conversations.List
 			FROM messages WHERE conversation_id = c.id
 			ORDER BY occurred_at DESC, id DESC LIMIT 1
 		) lm ON true
-		WHERE ($1 = '' OR COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), '') ILIKE '%' || $1 || '%')
+		WHERE ($1 = '' OR unaccent(COALESCE(NULLIF(c.title, ''), NULLIF(cc.name, ''), NULLIF(cc.push_name, ''), NULLIF(cc.phone, ''), '')) ILIKE '%' || unaccent($1) || '%')
 		  AND ($2::uuid IS NULL OR c.contact_id = $2)
 		  AND ($3 = '' OR c.type = $3)
 		  AND ($4::timestamptz IS NULL OR c.last_message_at >= $4)
@@ -316,7 +316,7 @@ func (s *Store) SearchMessages(ctx context.Context, params messages.SearchParams
 		LEFT JOIN contacts c ON c.id = m.sender_contact_id
 		LEFT JOIN message_read_receipts receipt
 		  ON receipt.message_id = m.id AND receipt.consumer_id = $8
-		WHERE ($1 = '' OR m.search_vector @@ websearch_to_tsquery('simple'::regconfig, $1))
+		WHERE ($1 = '' OR m.search_vector @@ websearch_to_tsquery('simple_unaccent'::regconfig, $1))
 		  AND ($2::timestamptz IS NULL OR m.occurred_at >= $2)
 		  AND ($3::timestamptz IS NULL OR m.occurred_at < $3)
 		  AND ($4::uuid IS NULL OR m.sender_contact_id = $4 OR conv.contact_id = $4)

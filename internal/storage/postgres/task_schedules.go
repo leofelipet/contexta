@@ -54,7 +54,7 @@ func (s *Store) ListTaskSchedules(ctx context.Context, params schedules.ListPara
 		SELECT `+scheduleSelectCols+scheduleFrom+`
 		WHERE ($1::timestamptz IS NULL OR (s.created_at, s.id) < ($1, $2::bigint))
 		  AND ($3::boolean IS NULL OR s.enabled = $3)
-		  AND ($4 = '' OR s.title ILIKE '%' || $4 || '%' OR s.description ILIKE '%' || $4 || '%' OR s.id::text = $4)
+		  AND ($4 = '' OR unaccent(s.title) ILIKE '%' || unaccent($4) || '%' OR unaccent(s.description) ILIKE '%' || unaccent($4) || '%' OR s.id::text = $4)
 		  AND ($5::bigint IS NULL OR s.company_id = $5::bigint)
 		ORDER BY s.created_at DESC, s.id DESC
 		LIMIT $6`,

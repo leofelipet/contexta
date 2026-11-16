@@ -48,7 +48,7 @@ func (s *Store) ListCompanies(ctx context.Context, params companies.ListParams) 
 		SELECT `+companySelectCols+`
 		FROM companies co
 		WHERE ($1 = '' OR (lower(co.name), co.id) > (lower($1), $2::bigint))
-		  AND ($3 = '' OR co.name ILIKE '%' || $3 || '%' OR co.notes ILIKE '%' || $3 || '%' OR co.rules ILIKE '%' || $3 || '%' OR co.id::text = $3)
+		  AND ($3 = '' OR unaccent(co.name) ILIKE '%' || unaccent($3) || '%' OR unaccent(co.notes) ILIKE '%' || unaccent($3) || '%' OR unaccent(co.rules) ILIKE '%' || unaccent($3) || '%' OR co.id::text = $3)
 		  AND ($4::bigint IS NULL OR co.id = $4::bigint)
 		ORDER BY lower(co.name), co.id
 		LIMIT $5`,

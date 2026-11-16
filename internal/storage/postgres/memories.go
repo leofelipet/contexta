@@ -63,7 +63,7 @@ func (s *Store) ListMemories(ctx context.Context, params memories.ListParams) (m
 		  AND ($4::uuid IS NULL OR m.conversation_id = $4::uuid)
 		  AND ($5::bigint IS NULL OR m.company_id = $5::bigint)
 		  AND ($6 = '' OR m.source = $6)
-		  AND ($7 = '' OR m.title ILIKE '%' || $7 || '%' OR m.content ILIKE '%' || $7 || '%')
+		  AND ($7 = '' OR unaccent(m.title) ILIKE '%' || unaccent($7) || '%' OR unaccent(m.content) ILIKE '%' || unaccent($7) || '%')
 		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT $8`,
 		nullableTime(cursor.Time), nullableUUID(cursor.ID),

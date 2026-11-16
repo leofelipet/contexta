@@ -89,11 +89,11 @@ func (s *Store) ListTasks(ctx context.Context, params tasks.ListParams) (tasks.P
 		SELECT `+taskSelectCols+taskJoins+`
 		WHERE ($1::timestamptz IS NULL OR (t.created_at, t.id) < ($1, $2::bigint))
 		  AND ($3 = '' OR t.status = $3)
-		  AND ($4 = '' OR co.name ILIKE '%' || $4 || '%')
+		  AND ($4 = '' OR unaccent(co.name) ILIKE '%' || unaccent($4) || '%')
 		  AND ($5::uuid IS NULL OR t.contact_id = $5::uuid)
 		  AND ($6::uuid IS NULL OR t.conversation_id = $6::uuid)
 		  AND ($7::bigint IS NULL OR t.id = $7::bigint)
-		  AND ($8 = '' OR t.title ILIKE '%' || $8 || '%' OR t.description ILIKE '%' || $8 || '%' OR t.id::text = $8)
+		  AND ($8 = '' OR unaccent(t.title) ILIKE '%' || unaccent($8) || '%' OR unaccent(t.description) ILIKE '%' || unaccent($8) || '%' OR t.id::text = $8)
 		  AND (
 		    NOT $9 OR (
 		      t.due_at IS NOT NULL

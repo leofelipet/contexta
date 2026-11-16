@@ -127,6 +127,10 @@ func TestIngestionAndQueries(t *testing.T) {
 	if len(messagePage.Messages) != 2 || messagePage.NextCursor == "" {
 		t.Fatalf("message page = %#v", messagePage)
 	}
+	accentMessages, err := store.SearchMessages(ctx, messages.SearchParams{Query: "CONTRÁTO", ConversationID: conversationID, Limit: 10})
+	if err != nil || len(accentMessages.Messages) != 3 {
+		t.Fatalf("accent-insensitive messages = %#v, error = %v", accentMessages, err)
+	}
 	typePage, err := store.SearchMessages(ctx, messages.SearchParams{ConversationID: conversationID, Type: "text", Limit: 10})
 	if err != nil || len(typePage.Messages) != 3 {
 		t.Fatalf("type-filtered messages = %#v, error = %v", typePage, err)
@@ -150,6 +154,11 @@ func TestIngestionAndQueries(t *testing.T) {
 	contactPage, err := store.ListContacts(ctx, contacts.ListParams{Query: suffix, Limit: 10})
 	if err != nil || len(contactPage.Contacts) != 1 {
 		t.Fatalf("contacts = %#v, error = %v", contactPage, err)
+	}
+
+	accentPage, err := store.ListContacts(ctx, contacts.ListParams{Query: "ALÍCE sincronizada " + suffix, Limit: 10})
+	if err != nil || len(accentPage.Contacts) != 1 {
+		t.Fatalf("accent-insensitive contacts = %#v, error = %v", accentPage, err)
 	}
 
 	if err := store.RecordActivity(ctx, activity.Record{
