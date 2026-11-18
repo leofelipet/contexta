@@ -23,13 +23,15 @@ const (
 )
 
 var (
-	ErrInvalidArgument  = errors.New("invalid argument")
-	ErrNotFound         = errors.New("not found")
-	ErrMessageNotFound  = errors.New("email message not found")
-	ErrDisabled         = errors.New("email account is disabled")
-	ErrMissingKey       = emailcrypto.ErrMissingKey
-	ErrProvider         = errors.New("email provider error")
-	autoSaveSentServers = []string{"imap.gmail.com", "outlook.office365.com", "imap-mail.outlook.com"}
+	ErrInvalidArgument    = errors.New("invalid argument")
+	ErrNotFound           = errors.New("not found")
+	ErrMessageNotFound    = errors.New("email message not found")
+	ErrDisabled           = errors.New("email account is disabled")
+	ErrMissingKey         = emailcrypto.ErrMissingKey
+	ErrProvider           = errors.New("email provider error")
+	ErrAttachmentNotFound = errors.New("email attachment not found")
+	ErrAttachmentTooLarge = errors.New("email attachment exceeds 10 MiB")
+	autoSaveSentServers   = []string{"imap.gmail.com", "outlook.office365.com", "imap-mail.outlook.com"}
 )
 
 // ProviderError wraps IMAP/SMTP failures so callers can surface the server
@@ -59,6 +61,7 @@ type IMAPClient interface {
 	ListMailboxes(context.Context, imapmail.Credentials) ([]imapmail.Mailbox, error)
 	Search(context.Context, imapmail.Credentials, imapmail.SearchParams) ([]imapmail.Summary, error)
 	Get(context.Context, imapmail.Credentials, string, uint32) (imapmail.Message, error)
+	GetAttachment(context.Context, imapmail.Credentials, string, uint32, string, string, int) (imapmail.AttachmentContent, error)
 	SetFlags(context.Context, imapmail.Credentials, string, []uint32, imapmail.FlagUpdate) error
 	Move(context.Context, imapmail.Credentials, string, uint32, string) error
 	Delete(context.Context, imapmail.Credentials, string, uint32) error
@@ -222,6 +225,25 @@ func (s *Service) GetEmail(ctx context.Context, accountID, folder string, uid ui
 	return mapMessage(msg), nil
 }
 
+// DownloadAttachment is read-only: it fetches with PEEK and never moves or flags.
+func (s *Service) DownloadAttachment(ctx context.Context, accountID, folder string, uid uint32, partID, filename string) (AttachmentData, error) {
+	if uid == 0 || (strings.TrimSpace(partID) == "" && strings.TrimSpace(filename) == "") {
+		return AttachmentData{}, ErrInvalidArgument
+	}
+	secrets, err := s.loadSecrets(ctx, accountID, true)
+	if err != nil {
+		return AttachmentData{}, err
+	}
+	got, err := s.imap.GetAttachment(ctx, imapCreds(secrets), folder, uid, partID, filename, MaxAttachmentBytes)
+	if err != nil {
+		return AttachmentData{}, providerError("imap", err)
+	}
+	return AttachmentData{
+		AttachmentMeta: mapAttachment(got.AttachmentMeta),
+		Content:        base64.StdEncoding.EncodeToString(got.Data),
+	}, nil
+}
+
 func (s *Service) SendEmail(ctx context.Context, accountID string, params SendParams) (SendResult, error) {
 	if len(params.To) == 0 {
 		return SendResult{}, ErrInvalidArgument
@@ -341,8 +363,13 @@ func (s *Service) loadSecrets(ctx context.Context, id string, requireEnabled boo
 }
 
 func providerError(protocol string, err error) error {
-	if errors.Is(err, imapmail.ErrMessageNotFound) {
+	switch {
+	case errors.Is(err, imapmail.ErrMessageNotFound):
 		return ErrMessageNotFound
+	case errors.Is(err, imapmail.ErrAttachmentNotFound):
+		return ErrAttachmentNotFound
+	case errors.Is(err, imapmail.ErrAttachmentTooLarge):
+		return ErrAttachmentTooLarge
 	}
 	return &ProviderError{Protocol: protocol, Err: err}
 }
@@ -407,7 +434,7 @@ func mapSummary(m imapmail.Summary) EmailSummary {
 func mapMessage(m imapmail.Message) EmailMessage {
 	attachments := make([]AttachmentMeta, len(m.Attachments))
 	for i, a := range m.Attachments {
-		attachments[i] = AttachmentMeta{Filename: a.Filename, MIMEType: a.MIMEType, Size: a.Size}
+		attachments[i] = mapAttachment(a)
 	}
 	return EmailMessage{
 		EmailSummary:  mapSummary(m.Summary),
@@ -421,6 +448,10 @@ func mapMessage(m imapmail.Message) EmailMessage {
 		BodyTruncated: m.BodyTruncated,
 		Attachments:   attachments,
 	}
+}
+
+func mapAttachment(a imapmail.AttachmentMeta) AttachmentMeta {
+	return AttachmentMeta{PartID: a.PartID, Filename: a.Filename, MIMEType: a.MIMEType, Size: a.Size}
 }
 
 func mapAddrs(in []imapmail.Address) []Address {

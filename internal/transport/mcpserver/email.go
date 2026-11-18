@@ -49,7 +49,8 @@ func (s *server) addEmailTools(mcpServer *mcp.Server) {
 	mcp.AddTool(mcpServer, openWorldReadTool("list_mailboxes", "List IMAP folders/mailboxes for one email account."), s.listMailboxes)
 	mcp.AddTool(mcpServer, openWorldReadTool("search_emails", "Search emails live via IMAP (folder, unseen, from/to/subject, date range)."), s.searchEmails)
 	mcp.AddTool(mcpServer, destructiveOpenWorldTool("send_email", "Send an email via the account SMTP settings and file a copy in Sent when save_sent_copy is enabled. To send files, use attachments: each item requires filename and base64-encoded content, with optional content_type (for example, application/pdf). Do not use local file paths or URLs: Contexta sends only the supplied Base64 bytes. Total decoded attachments are limited to 10 MiB. Destructive: delivers to external recipients."), s.sendEmail)
-	mcp.AddTool(mcpServer, openWorldReadTool("get_email", "Fetch one email by IMAP UID including truncated body text/html and attachment metadata. Does not mark the email as read; call mark_email_read for that."), s.getEmail)
+	mcp.AddTool(mcpServer, openWorldReadTool("get_email", "Fetch one email by IMAP UID including truncated body text/html and attachment metadata (part_id, filename, mime_type, approximate size). Attachment bytes are not included; call download_attachment with the part_id. Does not mark the email as read; call mark_email_read for that."), s.getEmail)
+	mcp.AddTool(mcpServer, openWorldReadTool("download_attachment", "Download one attachment of an email and return its bytes as Base64 in content. Pick it by part_id from get_email attachments (preferred) or by filename (case-insensitive). Read-only: does not mark the email as read, move or delete anything. Attachments larger than 10 MiB are refused."), s.downloadAttachment)
 	mcp.AddTool(mcpServer, openWorldWriteTool("mark_email_read", "Mark one or more emails (up to 100 UIDs in the same folder) as read, or as unread with read=false."), s.markEmailRead)
 	mcp.AddTool(mcpServer, openWorldWriteTool("set_email_flags", "Add or remove IMAP flags (e.g. seen, flagged) on one message."), s.setEmailFlags)
 	mcp.AddTool(mcpServer, openWorldWriteTool("move_email", "Move one email to another mailbox (use for archive)."), s.moveEmail)
@@ -148,6 +149,28 @@ func (s *server) getEmail(ctx context.Context, _ *mcp.CallToolRequest, input get
 		return nil, getEmailOutput{}, safeEmailToolError(err)
 	}
 	return nil, getEmailOutput{Email: msg}, nil
+}
+
+type downloadAttachmentInput struct {
+	AccountID string `json:"account_id" jsonschema:"Contexta email account ID."`
+	Folder    string `json:"folder,omitempty" jsonschema:"IMAP mailbox name. Defaults to INBOX."`
+	UID       uint32 `json:"uid" jsonschema:"IMAP message UID."`
+	PartID    string `json:"part_id,omitempty" jsonschema:"Attachment part_id from get_email, for example 2 or 1.2. Takes precedence over filename."`
+	Filename  string `json:"filename,omitempty" jsonschema:"Attachment filename, used when part_id is empty. The first match wins."`
+}
+
+type downloadAttachmentOutput struct {
+	Attachment email.AttachmentData `json:"attachment"`
+}
+
+func (s *server) downloadAttachment(ctx context.Context, _ *mcp.CallToolRequest, input downloadAttachmentInput) (*mcp.CallToolResult, downloadAttachmentOutput, error) {
+	s.logAccess(ctx, "download_attachment")
+	data, err := s.email.DownloadAttachment(ctx, input.AccountID, input.Folder, input.UID, input.PartID, input.Filename)
+	if err != nil {
+		s.logError(ctx, "download_attachment", err)
+		return nil, downloadAttachmentOutput{}, safeEmailToolError(err)
+	}
+	return nil, downloadAttachmentOutput{Attachment: data}, nil
 }
 
 type sendEmailInput struct {
@@ -279,6 +302,10 @@ func safeEmailToolError(err error) error {
 		return errors.New("email account not found")
 	case errors.Is(err, email.ErrMessageNotFound):
 		return errors.New("email message not found")
+	case errors.Is(err, email.ErrAttachmentNotFound):
+		return errors.New("email attachment not found; use part_id from get_email")
+	case errors.Is(err, email.ErrAttachmentTooLarge):
+		return errors.New("email attachment exceeds the 10 MiB limit")
 	case errors.Is(err, email.ErrProvider):
 		return err
 	case errors.Is(err, email.ErrInvalidArgument):

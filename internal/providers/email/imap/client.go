@@ -5,10 +5,12 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"mime/quotedprintable"
 	"net"
 	"slices"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 )
@@ -25,16 +28,22 @@ import (
 const (
 	// Bounds each mail server call so API callers get a real error instead of hanging.
 	operationTimeout = 25 * time.Second
-	maxBodyBytes     = 100 << 10
-	maxFetchBytes    = 2 << 20
-	defaultLimit     = 20
-	maxLimit         = 50
+	// Attachment downloads move up to ~14 MiB of Base64 over IMAP.
+	downloadTimeout = 2 * time.Minute
+	maxBodyBytes    = 100 << 10
+	// Encoded bytes fetched per text part; Base64/QP inflate the decoded body.
+	maxTextFetch  = 2 * maxBodyBytes
+	maxFetchBytes = 2 << 20
+	defaultLimit  = 20
+	maxLimit      = 50
 )
 
 var (
-	ErrMessageNotFound = errors.New("message not found")
-	ErrUnsafeExpunge   = errors.New("server supports neither MOVE nor UIDPLUS; refusing to expunge other messages in the folder")
-	ErrNoSentMailbox   = errors.New("no Sent mailbox found")
+	ErrMessageNotFound    = errors.New("message not found")
+	ErrUnsafeExpunge      = errors.New("server supports neither MOVE nor UIDPLUS; refusing to expunge other messages in the folder")
+	ErrNoSentMailbox      = errors.New("no Sent mailbox found")
+	ErrAttachmentNotFound = errors.New("attachment not found")
+	ErrAttachmentTooLarge = errors.New("attachment exceeds the size limit")
 )
 
 type Credentials struct {
@@ -57,9 +66,15 @@ type Address struct {
 }
 
 type AttachmentMeta struct {
+	PartID   string
 	Filename string
 	MIMEType string
 	Size     int
+}
+
+type AttachmentContent struct {
+	AttachmentMeta
+	Data []byte
 }
 
 type Summary struct {
@@ -107,12 +122,12 @@ type Client struct{}
 func NewClient() *Client { return &Client{} }
 
 func (c *Client) Test(ctx context.Context, creds Credentials) error {
-	return withSession(ctx, creds, func(*imapclient.Client) error { return nil })
+	return withSession(ctx, creds, operationTimeout, func(*imapclient.Client) error { return nil })
 }
 
 func (c *Client) ListMailboxes(ctx context.Context, creds Credentials) ([]Mailbox, error) {
 	var out []Mailbox
-	err := withSession(ctx, creds, func(client *imapclient.Client) error {
+	err := withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		list, err := client.List("", "*", nil).Collect()
 		if err != nil {
 			return fmt.Errorf("list mailboxes: %w", err)
@@ -141,7 +156,7 @@ func (c *Client) Search(ctx context.Context, creds Credentials, params SearchPar
 	}
 
 	out := []Summary{}
-	err := withSession(ctx, creds, func(client *imapclient.Client) error {
+	err := withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		if _, err := client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 			return fmt.Errorf("select mailbox %q: %w", folder, err)
 		}
@@ -172,28 +187,25 @@ func (c *Client) Search(ctx context.Context, creds Credentials, params SearchPar
 	return out, err
 }
 
+// Get reads the BODYSTRUCTURE and fetches only the text parts, so large
+// attachments are never downloaded just to show an email.
 func (c *Client) Get(ctx context.Context, creds Credentials, folder string, uid uint32) (Message, error) {
 	folder = defaultFolder(folder)
 	if uid == 0 {
 		return Message{}, fmt.Errorf("uid is required")
 	}
 	var result Message
-	err := withSession(ctx, creds, func(client *imapclient.Client) error {
+	err := withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		if _, err := client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 			return fmt.Errorf("select mailbox %q: %w", folder, err)
 		}
-		bodySection := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: maxFetchBytes}}
-		messages, err := client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{
+		msg, err := fetchOne(client, uid, &imap.FetchOptions{
 			UID: true, Flags: true, Envelope: true, RFC822Size: true, InternalDate: true,
-			BodySection: []*imap.FetchItemBodySection{bodySection},
-		}).Collect()
+			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+		})
 		if err != nil {
-			return fmt.Errorf("fetch: %w", err)
+			return err
 		}
-		if len(messages) == 0 {
-			return ErrMessageNotFound
-		}
-		msg := messages[0]
 		result = Message{Summary: summaryFromBuffer(folder, msg)}
 		if msg.Envelope != nil {
 			result.CC = mapAddresses(msg.Envelope.Cc)
@@ -204,16 +216,229 @@ func (c *Client) Get(ctx context.Context, creds Credentials, folder string, uid 
 				result.InReplyTo = msg.Envelope.InReplyTo[0]
 			}
 		}
-		if raw := msg.FindBodySection(bodySection); len(raw) > 0 {
-			text, html, truncated, attachments := parseMIME(raw)
-			result.BodyText = text
-			result.BodyHTML = html
-			result.BodyTruncated = truncated || msg.RFC822Size > maxFetchBytes
-			result.Attachments = attachments
+		if msg.BodyStructure == nil {
+			return getWholeBody(client, uid, &result, msg.RFC822Size)
+		}
+		text, html, attachments := splitParts(msg.BodyStructure)
+		for _, a := range attachments {
+			result.Attachments = append(result.Attachments, a.meta())
+		}
+		_, topSingle := msg.BodyStructure.(*imap.BodyStructureSinglePart)
+		if text != nil {
+			if result.BodyText, err = fetchText(client, uid, *text, topSingle, &result.BodyTruncated); err != nil {
+				return err
+			}
+		}
+		if html != nil {
+			if result.BodyHTML, err = fetchText(client, uid, *html, topSingle, &result.BodyTruncated); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	return result, err
+}
+
+// GetAttachment downloads one attachment, chosen by part ID or filename, and
+// returns its decoded bytes. It never changes flags or moves anything.
+func (c *Client) GetAttachment(ctx context.Context, creds Credentials, folder string, uid uint32, partID, filename string, maxBytes int) (AttachmentContent, error) {
+	folder = defaultFolder(folder)
+	partID, filename = strings.TrimSpace(partID), strings.TrimSpace(filename)
+	if uid == 0 || (partID == "" && filename == "") {
+		return AttachmentContent{}, fmt.Errorf("uid and part_id or filename are required")
+	}
+	var result AttachmentContent
+	err := withSession(ctx, creds, downloadTimeout, func(client *imapclient.Client) error {
+		if _, err := client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+			return fmt.Errorf("select mailbox %q: %w", folder, err)
+		}
+		msg, err := fetchOne(client, uid, &imap.FetchOptions{UID: true, BodyStructure: &imap.FetchItemBodyStructure{Extended: true}})
+		if err != nil {
+			return err
+		}
+		if msg.BodyStructure == nil {
+			return ErrAttachmentNotFound
+		}
+		_, _, attachments := splitParts(msg.BodyStructure)
+		var target *partRef
+		for i := range attachments {
+			a := &attachments[i]
+			if (partID != "" && a.id() == partID) || (partID == "" && strings.EqualFold(a.filename(), filename)) {
+				target = a
+				break
+			}
+		}
+		if target == nil {
+			return ErrAttachmentNotFound
+		}
+		if target.decodedSize() > maxBytes {
+			return ErrAttachmentTooLarge
+		}
+		section := &imap.FetchItemBodySection{Part: target.path, Peek: true}
+		got, err := client.Fetch(imap.UIDSetNum(imap.UID(uid)), &imap.FetchOptions{
+			UID: true, BodySection: []*imap.FetchItemBodySection{section},
+		}).Collect()
+		if err != nil {
+			return fmt.Errorf("fetch attachment: %w", err)
+		}
+		if len(got) == 0 {
+			return ErrMessageNotFound
+		}
+		data, err := io.ReadAll(io.LimitReader(decodeTransfer(target.part.Encoding, got[0].FindBodySection(section)), int64(maxBytes)+1))
+		if err != nil {
+			return fmt.Errorf("decode attachment: %w", err)
+		}
+		if len(data) > maxBytes {
+			return ErrAttachmentTooLarge
+		}
+		meta := target.meta()
+		meta.Size = len(data)
+		result = AttachmentContent{AttachmentMeta: meta, Data: data}
+		return nil
+	})
+	return result, err
+}
+
+func fetchOne(client *imapclient.Client, uid uint32, options *imap.FetchOptions) (*imapclient.FetchMessageBuffer, error) {
+	messages, err := client.Fetch(imap.UIDSetNum(imap.UID(uid)), options).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	if len(messages) == 0 {
+		return nil, ErrMessageNotFound
+	}
+	return messages[0], nil
+}
+
+// getWholeBody is the fallback for servers that return no BODYSTRUCTURE.
+func getWholeBody(client *imapclient.Client, uid uint32, result *Message, size int64) error {
+	section := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: maxFetchBytes}}
+	msg, err := fetchOne(client, uid, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}})
+	if err != nil {
+		return err
+	}
+	if raw := msg.FindBodySection(section); len(raw) > 0 {
+		text, html, truncated, attachments := parseMIME(raw)
+		result.BodyText, result.BodyHTML, result.Attachments = text, html, attachments
+		result.BodyTruncated = truncated || size > maxFetchBytes
+	}
+	return nil
+}
+
+type partRef struct {
+	path []int
+	part *imap.BodyStructureSinglePart
+}
+
+func (p partRef) id() string {
+	ids := make([]string, len(p.path))
+	for i, n := range p.path {
+		ids[i] = strconv.Itoa(n)
+	}
+	return strings.Join(ids, ".")
+}
+
+func (p partRef) filename() string {
+	name := p.part.Filename()
+	if name == "" {
+		// RFC 2231 form; mime.ParseMediaType decodes filename*=charset''value.
+		raw := ""
+		if d := p.part.Disposition(); d != nil {
+			raw = d.Params["filename*"]
+		}
+		if raw == "" {
+			raw = p.part.Params["name*"]
+		}
+		if raw != "" {
+			if _, params, err := mime.ParseMediaType("attachment; filename*=" + raw); err == nil {
+				name = params["filename"]
+			}
+		}
+	}
+	if decoded, err := (&mime.WordDecoder{CharsetReader: charset.Reader}).DecodeHeader(name); err == nil {
+		name = decoded
+	}
+	return name
+}
+
+// decodedSize estimates the decoded size from the encoded part size.
+func (p partRef) decodedSize() int {
+	if strings.EqualFold(p.part.Encoding, "base64") {
+		return int(p.part.Size) * 3 / 4
+	}
+	return int(p.part.Size)
+}
+
+func (p partRef) meta() AttachmentMeta {
+	return AttachmentMeta{PartID: p.id(), Filename: p.filename(), MIMEType: p.part.MediaType(), Size: p.decodedSize()}
+}
+
+// splitParts picks the first inline text/plain and text/html parts as bodies;
+// every other leaf part is reported as an attachment.
+func splitParts(bs imap.BodyStructure) (text, html *partRef, attachments []partRef) {
+	bs.Walk(func(path []int, node imap.BodyStructure) bool {
+		part, ok := node.(*imap.BodyStructureSinglePart)
+		if !ok {
+			return true
+		}
+		ref := partRef{path: slices.Clone(path), part: part}
+		disposition := part.Disposition()
+		inline := part.Filename() == "" && (disposition == nil || !strings.EqualFold(disposition.Value, "attachment"))
+		switch mediaType := part.MediaType(); {
+		case inline && mediaType == "text/plain":
+			if text == nil {
+				text = &ref
+			}
+		case inline && mediaType == "text/html":
+			if html == nil {
+				html = &ref
+			}
+		default:
+			attachments = append(attachments, ref)
+		}
+		return true
+	})
+	return text, html, attachments
+}
+
+// fetchText downloads one text part (capped) with its MIME header and decodes
+// transfer encoding and charset through go-message.
+func fetchText(client *imapclient.Client, uid uint32, ref partRef, topSingle bool, truncated *bool) (string, error) {
+	header := &imap.FetchItemBodySection{Part: ref.path, Specifier: imap.PartSpecifierMIME, Peek: true}
+	if topSingle {
+		header = &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
+	}
+	body := &imap.FetchItemBodySection{Part: ref.path, Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: maxTextFetch}}
+	msg, err := fetchOne(client, uid, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{header, body}})
+	if err != nil {
+		return "", err
+	}
+	if ref.part.Size > maxTextFetch {
+		*truncated = true
+	}
+	raw := append(msg.FindBodySection(header), msg.FindBodySection(body)...)
+	entity, err := message.Read(bytes.NewReader(raw))
+	if entity == nil {
+		return "", fmt.Errorf("parse text part: %w", err)
+	}
+	// A cut Base64/QP tail makes the decoder fail at the end; keep what decoded.
+	b, _ := io.ReadAll(io.LimitReader(entity.Body, int64(maxBodyBytes)+1))
+	out, trunc := truncateRunes(string(b), maxBodyBytes)
+	if trunc {
+		*truncated = true
+	}
+	return out, nil
+}
+
+func decodeTransfer(encoding string, raw []byte) io.Reader {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "base64":
+		return base64.NewDecoder(base64.StdEncoding, bytes.NewReader(raw))
+	case "quoted-printable":
+		return quotedprintable.NewReader(bytes.NewReader(raw))
+	default:
+		return bytes.NewReader(raw)
+	}
 }
 
 func (c *Client) SetFlags(ctx context.Context, creds Credentials, folder string, uids []uint32, update FlagUpdate) error {
@@ -221,7 +446,7 @@ func (c *Client) SetFlags(ctx context.Context, creds Credentials, folder string,
 	if len(uids) == 0 {
 		return fmt.Errorf("at least one uid is required")
 	}
-	return withSession(ctx, creds, func(client *imapclient.Client) error {
+	return withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		if _, err := client.Select(folder, nil).Wait(); err != nil {
 			return fmt.Errorf("select mailbox %q: %w", folder, err)
 		}
@@ -246,7 +471,7 @@ func (c *Client) Move(ctx context.Context, creds Credentials, folder string, uid
 	if destMailbox == "" {
 		return fmt.Errorf("destination mailbox is required")
 	}
-	return withSession(ctx, creds, func(client *imapclient.Client) error {
+	return withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		if _, err := client.Select(folder, nil).Wait(); err != nil {
 			return fmt.Errorf("select mailbox %q: %w", folder, err)
 		}
@@ -256,7 +481,7 @@ func (c *Client) Move(ctx context.Context, creds Credentials, folder string, uid
 
 func (c *Client) Delete(ctx context.Context, creds Credentials, folder string, uid uint32) error {
 	folder = defaultFolder(folder)
-	return withSession(ctx, creds, func(client *imapclient.Client) error {
+	return withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		trash := findSpecialMailbox(client, imap.MailboxAttrTrash, "Trash", "INBOX.Trash", "Lixeira", "Deleted Items", "Itens Excluídos")
 		if _, err := client.Select(folder, nil).Wait(); err != nil {
 			return fmt.Errorf("select mailbox %q: %w", folder, err)
@@ -282,7 +507,7 @@ func (c *Client) Delete(ctx context.Context, creds Credentials, folder string, u
 
 // AppendSent stores a copy of an already-sent RFC 5322 message in the Sent mailbox.
 func (c *Client) AppendSent(ctx context.Context, creds Credentials, raw []byte) error {
-	return withSession(ctx, creds, func(client *imapclient.Client) error {
+	return withSession(ctx, creds, operationTimeout, func(client *imapclient.Client) error {
 		sent := findSpecialMailbox(client, imap.MailboxAttrSent, "Sent", "INBOX.Sent", "Sent Items", "Sent Messages", "Enviados", "Itens Enviados")
 		if sent == "" {
 			return ErrNoSentMailbox
@@ -302,8 +527,8 @@ func (c *Client) AppendSent(ctx context.Context, creds Credentials, raw []byte) 
 	})
 }
 
-func withSession(ctx context.Context, creds Credentials, fn func(*imapclient.Client) error) error {
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+func withSession(ctx context.Context, creds Credentials, timeout time.Duration, fn func(*imapclient.Client) error) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	client, stop, err := dialAndLogin(ctx, creds)
 	if err != nil {

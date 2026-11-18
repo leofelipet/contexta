@@ -63,6 +63,12 @@ func (f *fakeIMAP) Search(context.Context, imapmail.Credentials, imapmail.Search
 func (f *fakeIMAP) Get(context.Context, imapmail.Credentials, string, uint32) (imapmail.Message, error) {
 	return imapmail.Message{}, f.getErr
 }
+func (f *fakeIMAP) GetAttachment(_ context.Context, _ imapmail.Credentials, _ string, _ uint32, partID, _ string, _ int) (imapmail.AttachmentContent, error) {
+	if f.getErr != nil {
+		return imapmail.AttachmentContent{}, f.getErr
+	}
+	return imapmail.AttachmentContent{AttachmentMeta: imapmail.AttachmentMeta{PartID: partID, Filename: "a.zip"}, Data: []byte("PK")}, nil
+}
 func (f *fakeIMAP) SetFlags(_ context.Context, _ imapmail.Credentials, _ string, uids []uint32, update imapmail.FlagUpdate) error {
 	f.flagUIDs, f.flagUpdate = uids, update
 	return nil
@@ -285,5 +291,23 @@ func TestDefaultSaveSentCopy(t *testing.T) {
 		if got := DefaultSaveSentCopy(host); got != want {
 			t.Fatalf("DefaultSaveSentCopy(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+func TestDownloadAttachmentEncodesAndMapsErrors(t *testing.T) {
+	t.Parallel()
+	service, _, imapClient, _ := newTestService(t, Account{Enabled: true})
+	ctx := context.Background()
+
+	if _, err := service.DownloadAttachment(ctx, testAccountID, "", 1, "", " "); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("missing part err = %v", err)
+	}
+	got, err := service.DownloadAttachment(ctx, testAccountID, "", 1, "2", "")
+	if err != nil || got.Content != "UEs=" || got.PartID != "2" || got.Filename != "a.zip" {
+		t.Fatalf("got = %+v, err = %v", got, err)
+	}
+	imapClient.getErr = imapmail.ErrAttachmentTooLarge
+	if _, err := service.DownloadAttachment(ctx, testAccountID, "", 1, "2", ""); !errors.Is(err, ErrAttachmentTooLarge) {
+		t.Fatalf("too large err = %v", err)
 	}
 }

@@ -262,3 +262,53 @@ func TestLoginFailureAndTimeout(t *testing.T) {
 		t.Fatalf("hung for %v despite context deadline", time.Since(started))
 	}
 }
+
+const multipartMessage = "From: zofia@example.com\r\nTo: me@example.com\r\nSubject: Contatos\r\n" +
+	"MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=outer\r\n\r\n" +
+	"--outer\r\nContent-Type: multipart/alternative; boundary=alt\r\n\r\n" +
+	"--alt\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nSegue em anexo, Jo=E3o.\r\n" +
+	"--alt\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Segue em anexo</p>\r\n" +
+	"--alt--\r\n" +
+	"--outer\r\nContent-Type: application/zip; name=\"contatos.zip\"\r\nContent-Disposition: attachment; filename=\"contatos.zip\"\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+	"UEsDBGNvbnRhdG9z\r\n" + // "PK\x03\x04contatos"
+	"--outer--\r\n"
+
+func TestGetSkipsAttachmentBytesAndGetAttachmentDecodes(t *testing.T) {
+	t.Parallel()
+	srv := startMemServer(t, fullCaps(), true)
+	data, err := srv.user.Append("INBOX", literal(multipartMessage), &imap.AppendOptions{Time: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid := uint32(data.UID)
+	c := NewClient()
+	ctx := context.Background()
+
+	msg, err := c.Get(ctx, srv.creds, "INBOX", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(msg.BodyText) != "Segue em anexo, João." || strings.TrimSpace(msg.BodyHTML) != "<p>Segue em anexo</p>" {
+		t.Fatalf("bodies = %q / %q", msg.BodyText, msg.BodyHTML)
+	}
+	if len(msg.Attachments) != 1 || msg.Attachments[0].PartID != "2" || msg.Attachments[0].Filename != "contatos.zip" || msg.Attachments[0].MIMEType != "application/zip" {
+		t.Fatalf("attachments = %+v", msg.Attachments)
+	}
+
+	want := "PK\x03\x04contatos"
+	for _, pick := range []struct{ part, name string }{{"2", ""}, {"", "CONTATOS.zip"}} {
+		got, err := c.GetAttachment(ctx, srv.creds, "INBOX", uid, pick.part, pick.name, 1<<20)
+		if err != nil || string(got.Data) != want || got.Filename != "contatos.zip" || got.Size != len(want) {
+			t.Fatalf("GetAttachment(%+v) = %+v, %v", pick, got, err)
+		}
+	}
+	if _, err := c.GetAttachment(ctx, srv.creds, "INBOX", uid, "", "outro.pdf", 1<<20); !errors.Is(err, ErrAttachmentNotFound) {
+		t.Fatalf("missing attachment err = %v", err)
+	}
+	if _, err := c.GetAttachment(ctx, srv.creds, "INBOX", uid, "2", "", 4); !errors.Is(err, ErrAttachmentTooLarge) {
+		t.Fatalf("too large err = %v", err)
+	}
+	if slices.Contains(flagsOf(t, c, srv.creds, "INBOX", uid), string(imap.FlagSeen)) {
+		t.Fatal("reading the email or attachment marked it as seen")
+	}
+}

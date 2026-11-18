@@ -459,14 +459,14 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 64 {
-		t.Fatalf("tools = %d, want 64 with email and pushover", len(tools.Tools))
+	if len(tools.Tools) != 65 {
+		t.Fatalf("tools = %d, want 65 with email and pushover", len(tools.Tools))
 	}
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range tools.Tools {
 		byName[tool.Name] = tool
 	}
-	for _, name := range []string{"list_email_accounts", "list_mailboxes", "search_emails", "get_email", "mark_email_read", "send_email", "set_email_flags", "move_email", "delete_email"} {
+	for _, name := range []string{"list_email_accounts", "list_mailboxes", "search_emails", "get_email", "download_attachment", "mark_email_read", "send_email", "set_email_flags", "move_email", "delete_email"} {
 		tool := byName[name]
 		if tool == nil || tool.Annotations == nil {
 			t.Fatalf("missing email tool %s", name)
@@ -477,6 +477,9 @@ func TestMCPEmailToolsRegistered(t *testing.T) {
 	}
 	if !*byName["send_email"].Annotations.DestructiveHint || !*byName["delete_email"].Annotations.DestructiveHint || !*byName["send_pushover_notification"].Annotations.DestructiveHint {
 		t.Fatal("external delivery tools should be destructive")
+	}
+	if download := byName["download_attachment"].Annotations; !download.ReadOnlyHint || *download.DestructiveHint {
+		t.Fatal("download_attachment must be read-only")
 	}
 	if byName["list_email_accounts"].Annotations.OpenWorldHint != nil && *byName["list_email_accounts"].Annotations.OpenWorldHint {
 		t.Fatal("list_email_accounts should stay closed-world")

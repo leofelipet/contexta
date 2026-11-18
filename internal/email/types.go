@@ -96,6 +96,12 @@ type AttachmentMeta struct {
 	Size     int    `json:"size,omitempty"`
 }
 
+// AttachmentData is a downloaded attachment with Base64-encoded content.
+type AttachmentData struct {
+	AttachmentMeta
+	Content string `json:"content"`
+}
+
 type EmailSummary struct {
 	UID     uint32    `json:"uid"`
 	Folder  string    `json:"folder"`
