@@ -3,17 +3,18 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/leofelipet/contexta/internal/activity"
-	"github.com/leofelipet/contexta/internal/auth"
 	"github.com/leofelipet/contexta/internal/companies"
 	"github.com/leofelipet/contexta/internal/contacts"
 	"github.com/leofelipet/contexta/internal/conversations"
 	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/email"
+	"github.com/leofelipet/contexta/internal/mcpkeys"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
@@ -23,6 +24,7 @@ import (
 	"github.com/leofelipet/contexta/internal/tasks"
 	"github.com/leofelipet/contexta/internal/version"
 	"github.com/leofelipet/contexta/internal/whatsappsend"
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -84,14 +86,26 @@ type server struct {
 	logger   *slog.Logger
 }
 
-func New(store Store, memoriesService *memories.Service, emailService *email.Service, pushoverService *pushover.Service, whatsappService *whatsappsend.Service, token string, logger *slog.Logger) http.Handler {
+// Handler serves MCP over HTTP and exposes the registered tool catalog.
+type Handler struct {
+	http.Handler
+	Tools []mcpkeys.Tool
+}
+
+func New(store Store, memoriesService *memories.Service, emailService *email.Service, pushoverService *pushover.Service, whatsappService *whatsappsend.Service, keys KeyAuthenticator, logger *slog.Logger) (*Handler, error) {
 	implementation := &server{store: store, memories: memoriesService, email: emailService, pushover: pushoverService, whatsapp: whatsappService, logger: logger}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "contexta", Version: version.Version}, nil)
 	implementation.addTools(mcpServer)
+	catalog, err := listTools(mcpServer)
+	if err != nil {
+		return nil, fmt.Errorf("list MCP tools: %w", err)
+	}
+	mcpServer.AddReceivingMiddleware(authorizeTools)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return mcpServer
 	}, &mcp.StreamableHTTPOptions{Stateless: true})
-	return auth.NewMiddleware(token).Wrap(http.MaxBytesHandler(handler, 14<<20))
+	requireKey := auth.RequireBearerToken(verifier(keys, catalog), nil)
+	return &Handler{Handler: requireKey(http.MaxBytesHandler(handler, 14<<20)), Tools: catalog}, nil
 }
 
 func (s *server) addTools(mcpServer *mcp.Server) {

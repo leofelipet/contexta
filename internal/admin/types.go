@@ -1,6 +1,10 @@
 package admin
 
-import "time"
+import (
+	"time"
+
+	"github.com/leofelipet/contexta/internal/mcpkeys"
+)
 
 type Dashboard struct {
 	Contacts              int64             `json:"contacts"`
@@ -41,11 +45,11 @@ type TopConversation struct {
 }
 
 type MCPStatus struct {
-	Enabled        bool       `json:"enabled"`
-	Endpoint       string     `json:"endpoint"`
-	Authentication string     `json:"authentication"`
-	Tools          []string   `json:"tools"`
-	LastAccessAt   *time.Time `json:"last_access_at,omitempty"`
+	Enabled        bool           `json:"enabled"`
+	Endpoint       string         `json:"endpoint"`
+	Authentication string         `json:"authentication"`
+	Tools          []mcpkeys.Tool `json:"tools"`
+	LastAccessAt   *time.Time     `json:"last_access_at,omitempty"`
 }
 
 type SystemOverview struct {

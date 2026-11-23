@@ -95,7 +95,7 @@ func (s *recordingWhatsAppSender) SendPix(_ context.Context, pix uazapi.Pix) (ua
 func connectWhatsApp(t *testing.T, store *activityStore, sender *recordingWhatsAppSender) *mcp.ClientSession {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	httpServer := httptest.NewServer(New(store, memories.NewService(fakeMemoryStore{}, nil), nil, nil, whatsappsend.NewService(sender), "test-token", logger))
+	httpServer := httptest.NewServer(testHandler(store, memories.NewService(fakeMemoryStore{}, nil), nil, nil, whatsappsend.NewService(sender), logger))
 	t.Cleanup(httpServer.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "contexta-test", Version: "1.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{

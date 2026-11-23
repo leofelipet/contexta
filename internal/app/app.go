@@ -17,6 +17,7 @@ import (
 	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/embeddings"
 	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/mcpkeys"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/providers/transcription/groq"
 	"github.com/leofelipet/contexta/internal/providers/whatsapp/uazapi"
@@ -105,18 +106,29 @@ func serve(ctx context.Context, cfg config.Config) error {
 	if cfg.SchedulerEnabled {
 		go schedules.NewWorker(store, schedules.DiscardNotifications, logger).Run(ctx)
 	}
+	var mcpHandler *mcpserver.Handler
+	if cfg.MCPEnabled {
+		mcpHandler, err = mcpserver.New(store, memoriesService, emailService, pushoverService, whatsappsend.NewService(uazapiClient), store, logger)
+		if err != nil {
+			return err
+		}
+	}
+	mcpTools := []mcpkeys.Tool{}
+	if mcpHandler != nil {
+		mcpTools = mcpHandler.Tools
+	}
 	apiHandler := httpapi.New(httpapi.Options{
 		Store: store, Memories: memoriesService, Email: emailService, Pushover: pushoverService, Trello: trelloService, Ingestion: ingestionService, APIToken: cfg.APIToken,
 		WebhookSecret: cfg.UAZAPI.WebhookSecret, ProviderInstanceID: cfg.UAZAPI.InstanceID,
 		CaptureDir: cfg.UAZAPI.CaptureDir, WebhookPublicURL: cfg.UAZAPI.WebhookPublicURL,
 		TrelloWebhookSecret: cfg.Trello.WebhookSecret,
-		UAZAPIClient:        uazapiClient, MCPEnabled: cfg.MCPEnabled, StartedAt: time.Now().UTC(), Logger: logger,
+		UAZAPIClient:        uazapiClient, MCPEnabled: cfg.MCPEnabled, MCPTools: mcpTools, StartedAt: time.Now().UTC(), Logger: logger,
 		Realtime: realtime.NewHub(), AndroidDistDir: cfg.AndroidDistDir,
 	})
 
 	root := http.NewServeMux()
-	if cfg.MCPEnabled {
-		root.Handle("/mcp", mcpserver.New(store, memoriesService, emailService, pushoverService, whatsappsend.NewService(uazapiClient), cfg.MCPToken, logger))
+	if mcpHandler != nil {
+		root.Handle("/mcp", mcpHandler)
 	}
 	root.Handle("/", apiHandler)
 

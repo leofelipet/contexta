@@ -22,6 +22,7 @@ import (
 	"github.com/leofelipet/contexta/internal/denylist"
 	"github.com/leofelipet/contexta/internal/email"
 	"github.com/leofelipet/contexta/internal/ingestion"
+	"github.com/leofelipet/contexta/internal/mcpkeys"
 	"github.com/leofelipet/contexta/internal/memories"
 	"github.com/leofelipet/contexta/internal/messages"
 	"github.com/leofelipet/contexta/internal/pagination"
@@ -99,6 +100,10 @@ type Store interface {
 	CreateAdminPasskey(context.Context, passkeys.CreateParams) (passkeys.Passkey, error)
 	UpdateAdminPasskeyCounter(context.Context, string, int64) (passkeys.Passkey, error)
 	DeleteAdminPasskey(context.Context, string) error
+	ListMCPKeys(context.Context) ([]mcpkeys.Key, error)
+	CreateMCPKey(ctx context.Context, params mcpkeys.Params, prefix, hash string) (mcpkeys.Key, error)
+	UpdateMCPKey(context.Context, string, mcpkeys.Params) (mcpkeys.Key, error)
+	DeleteMCPKey(context.Context, string) error
 }
 
 type UAZAPIClient interface {
@@ -122,6 +127,7 @@ type Options struct {
 	TrelloWebhookSecret string
 	UAZAPIClient        UAZAPIClient
 	MCPEnabled          bool
+	MCPTools            []mcpkeys.Tool
 	StartedAt           time.Time
 	Logger              *slog.Logger
 	Realtime            *realtime.Hub
@@ -147,6 +153,7 @@ func New(options Options) http.Handler {
 		trelloWebhookSecret: options.TrelloWebhookSecret,
 		uazapi:              options.UAZAPIClient,
 		mcpEnabled:          options.MCPEnabled,
+		mcpTools:            options.MCPTools,
 		startedAt:           startedAt,
 		logger:              options.Logger,
 		androidDistDir:      options.AndroidDistDir,
@@ -233,6 +240,10 @@ func New(options Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/email-accounts/{id}", handler.deleteEmailAccount)
 	api.HandleFunc("POST /api/v1/email-accounts/{id}/test", handler.testEmailAccount)
 	api.HandleFunc("GET /api/v1/mcp/status", handler.mcpStatus)
+	api.HandleFunc("GET /api/v1/mcp/keys", handler.listMCPKeys)
+	api.HandleFunc("POST /api/v1/mcp/keys", handler.createMCPKey)
+	api.HandleFunc("PATCH /api/v1/mcp/keys/{id}", handler.updateMCPKey)
+	api.HandleFunc("DELETE /api/v1/mcp/keys/{id}", handler.deleteMCPKey)
 	api.HandleFunc("GET /api/v1/activity", handler.listActivity)
 	api.HandleFunc("GET /api/v1/events", handler.events)
 	api.HandleFunc("GET /api/v1/android/update", handler.androidUpdate)
@@ -260,6 +271,7 @@ type handler struct {
 	trelloWebhookSecret string
 	uazapi              UAZAPIClient
 	mcpEnabled          bool
+	mcpTools            []mcpkeys.Tool
 	startedAt           time.Time
 	logger              *slog.Logger
 	realtime            *realtime.Hub
@@ -1043,8 +1055,8 @@ func (h *handler) mcpStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, admin.MCPStatus{
-		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer",
-		Tools:        []string{"search_messages", "list_unread_messages", "acknowledge_messages", "acknowledge_messages_bulk", "count_unread", "find_conversations", "get_conversation", "get_messages", "get_messages_around", "list_contacts", "get_contact", "list_denylist", "add_to_denylist", "remove_from_denylist", "list_tasks", "get_task", "create_task", "update_task", "delete_task", "attach_memory_to_task", "detach_memory_from_task", "list_task_schedules", "get_task_schedule", "create_task_schedule", "update_task_schedule", "delete_task_schedule", "search_memories", "list_memories", "get_memory", "save_memory", "update_memory", "delete_memory"},
+		Enabled: h.mcpEnabled, Endpoint: "/mcp", Authentication: "bearer (chaves nomeadas)",
+		Tools:        h.mcpTools,
 		LastAccessAt: lastAccess,
 	})
 }

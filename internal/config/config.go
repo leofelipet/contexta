@@ -21,7 +21,6 @@ type Config struct {
 	HTTPPort            int
 	ShutdownTimeout     time.Duration
 	APIToken            string
-	MCPToken            string
 	MCPEnabled          bool
 	SchedulerEnabled    bool
 	AndroidDistDir      string
@@ -85,7 +84,6 @@ func Load() (Config, error) {
 		HTTPPort:         port,
 		ShutdownTimeout:  shutdownTimeout,
 		APIToken:         os.Getenv("API_BEARER_TOKEN"),
-		MCPToken:         os.Getenv("MCP_BEARER_TOKEN"),
 		MCPEnabled:       mcpEnabled,
 		SchedulerEnabled: schedulerEnabled,
 		AndroidDistDir:   strings.TrimRight(os.Getenv("ANDROID_DIST_DIR"), "/"),
@@ -146,9 +144,6 @@ func (c Config) Validate() error {
 	}
 	if len(c.APIToken) < minimumSecretLength {
 		errs = append(errs, fmt.Errorf("API_BEARER_TOKEN must contain at least %d characters", minimumSecretLength))
-	}
-	if c.MCPEnabled && len(c.MCPToken) < minimumSecretLength {
-		errs = append(errs, fmt.Errorf("MCP_BEARER_TOKEN must contain at least %d characters", minimumSecretLength))
 	}
 	if c.UAZAPI.BaseURL == "" {
 		errs = append(errs, errors.New("UAZAPI_BASE_URL is required"))

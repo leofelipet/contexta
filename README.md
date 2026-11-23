@@ -24,7 +24,7 @@ go run ./cmd/contexta migrate
 go run ./cmd/contexta serve
 ```
 
-Generate independent random values containing at least 32 characters for `API_BEARER_TOKEN`, `MCP_BEARER_TOKEN`, and `UAZAPI_WEBHOOK_SECRET` before starting the server.
+Generate independent random values containing at least 32 characters for `API_BEARER_TOKEN` and `UAZAPI_WEBHOOK_SECRET` before starting the server.
 
 To run PostgreSQL, migrations, and the backend together in containers, fill `.env` and run:
 
@@ -242,8 +242,10 @@ The Streamable HTTP MCP endpoint is:
 
 ```text
 POST /mcp
-Authorization: Bearer $MCP_BEARER_TOKEN
+Authorization: Bearer <MCP key>
 ```
+
+MCP keys are created in the admin panel (MCP page) or via `POST /api/v1/mcp/keys`. Each key has a name, an optional expiry, and an access level: `read` (every read-only tool), `write` (every tool), or `custom` (a chosen tool list). The secret is shown only once; the server stores its SHA-256 hash. A key only sees and can call the tools in its scope.
 
 Available tools:
 
